@@ -1,0 +1,19 @@
+package com.pbl4.server.enums;
+
+public enum PermissionCode {
+    ACCOUNT_VIEW,
+    ACCOUNT_MANAGE,
+    CLIENT_VIEW,
+    CLIENT_MANAGE,
+    AGENT_VIEW,
+    AGENT_MANAGE,
+    CREDENTIAL_MANAGE,
+    MONITORING_VIEW,
+    ALERT_VIEW,
+    ALERT_MANAGE,
+    HISTORY_VIEW,
+    REPORT_VIEW,
+    REMOTE_COMMAND,
+    SYSTEM_CONFIG,
+    LOG_VIEW
+}
