@@ -1,5 +1,9 @@
 package pbl4.agent;
 
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.WebApplicationType;
+
 import pbl4.agent.client.ServerClient;
 import pbl4.agent.config.AgentConfig;
 import pbl4.agent.model.ClientSystemInfo;
@@ -9,23 +13,54 @@ import pbl4.agent.monitoring.MonitoringService;
 
 import pbl4.agent.scheduler.HeartbeatScheduler;
 import pbl4.agent.scheduler.MonitoringScheduler;
+import pbl4.agent.scheduler.RemoteCommandScheduler;
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.WebApplicationType;
+import pbl4.agent.service.RemoteCommandExecutor;
+
 
 @SpringBootApplication
 public class AgentApplication {
 
     public static void main(String[] args) {
 
-        // ==============================
-        // START AGENT
-        // ==============================
+        // =========================================
+        // 1. START AGENT
+        // =========================================
 
-        System.out.println("================================");
-        System.out.println("       PBL4 CLIENT AGENT");
-        System.out.println("================================");
+        System.out.println("========================================");
+        System.out.println("          PBL4 CLIENT AGENT");
+        System.out.println("========================================");
+
+
+        // =========================================
+        // 2. LOAD AGENT CONFIGURATION
+        // =========================================
+
+        AgentConfig config = new AgentConfig(
+                "http://localhost:8080",
+                "AGENT-001",
+                "1.0.0",
+                System.getenv("PBL4_AGENT_CREDENTIAL")
+        );
+
+        // Kiểm tra Agent Credential
+
+        if (config.getCredential() == null
+                || config.getCredential().isBlank()) {
+
+            throw new IllegalStateException(
+                    "Chưa cấu hình biến môi trường "
+                            + "PBL4_AGENT_CREDENTIAL"
+            );
+        }
+
+        System.out.println("[AGENT] Đã tải cấu hình thành công.");
+        System.out.println("[AGENT] Agent ID: " + config.getAgentId());
+
+
+        // =========================================
+        // 3. START SPRING APPLICATION
+        // =========================================
 
         SpringApplication app =
                 new SpringApplication(AgentApplication.class);
@@ -36,39 +71,34 @@ public class AgentApplication {
 
         app.run(args);
 
-        // ==============================
-        // AGENT CONFIGURATION
-        // ==============================
+        System.out.println("[AGENT] Spring Application started.");
 
-        AgentConfig config =
-                new AgentConfig(
-                        "http://localhost:8080",
-                        "AGENT-001",
-                        "1.0.0",
-                        "d4d68bf8-9cf7-4283-9469-56477c3b505c"
-                );
 
-        // ==============================
-        // CONNECT TO SERVER
-        // ==============================
+        // =========================================
+        // 4. INITIALIZE SERVER CLIENT
+        // =========================================
 
         ServerClient serverClient =
                 new ServerClient(config);
 
-        // ==============================
-        // START HEARTBEAT SCHEDULER
-        // ==============================
+        System.out.println("[AGENT] Server Client initialized.");
+
+
+        // =========================================
+        // 5. START HEARTBEAT SCHEDULER
+        // =========================================
 
         HeartbeatScheduler heartbeatScheduler =
-                new HeartbeatScheduler(
-                        serverClient
-                );
+                new HeartbeatScheduler(serverClient);
 
         heartbeatScheduler.start();
 
-        // ==============================
-        // CLIENT SYSTEM INFORMATION
-        // ==============================
+        System.out.println("[AGENT] Heartbeat Scheduler started.");
+
+
+        // =========================================
+        // 6. GET CLIENT SYSTEM INFORMATION
+        // =========================================
 
         ClientInfoService clientInfoService =
                 new ClientInfoService();
@@ -79,59 +109,52 @@ public class AgentApplication {
                 );
 
         System.out.println();
+        System.out.println("========== CLIENT SYSTEM INFO ==========");
+
         System.out.println(
-                "========== CLIENT INFO =========="
+                "Client ID      : " + info.getClientId()
         );
 
         System.out.println(
-                "Client ID      : "
-                        + info.getClientId()
+                "Hostname       : " + info.getHostname()
         );
 
         System.out.println(
-                "Hostname       : "
-                        + info.getHostname()
+                "IP Address     : " + info.getIpAddress()
         );
 
         System.out.println(
-                "IP Address     : "
-                        + info.getIpAddress()
+                "OS             : " + info.getOsName()
         );
 
         System.out.println(
-                "OS             : "
-                        + info.getOsName()
+                "OS Version     : " + info.getOsVersion()
         );
 
         System.out.println(
-                "OS Version     : "
-                        + info.getOsVersion()
+                "Kernel Version : " + info.getKernelVersion()
         );
 
         System.out.println(
-                "Kernel Version : "
-                        + info.getKernelVersion()
+                "Boot Time      : " + info.getBootTime()
         );
 
-        System.out.println(
-                "Boot Time      : "
-                        + info.getBootTime()
-        );
+        System.out.println("========================================");
 
-        System.out.println(
-                "================================"
-        );
 
-        // ==============================
-        // CREATE MONITORING SERVICE
-        // ==============================
+        // =========================================
+        // 7. INITIALIZE MONITORING SERVICE
+        // =========================================
 
         MonitoringService monitoringService =
                 new MonitoringService();
 
-        // ==============================
-        // START MONITORING SCHEDULER
-        // ==============================
+        System.out.println("[AGENT] Monitoring Service initialized.");
+
+
+        // =========================================
+        // 8. START MONITORING SCHEDULER
+        // =========================================
 
         MonitoringScheduler monitoringScheduler =
                 new MonitoringScheduler(
@@ -141,5 +164,48 @@ public class AgentApplication {
                 );
 
         monitoringScheduler.start();
+
+        System.out.println("[AGENT] Monitoring Scheduler started.");
+
+
+        // =========================================
+        // 9. INITIALIZE REMOTE COMMAND EXECUTOR
+        // =========================================
+
+        RemoteCommandExecutor executor =
+                new RemoteCommandExecutor(config);
+
+        System.out.println("[AGENT] Remote Command Executor initialized.");
+
+
+        // =========================================
+        // 10. START REMOTE COMMAND SCHEDULER
+        // =========================================
+
+        RemoteCommandScheduler commandScheduler =
+                new RemoteCommandScheduler(
+                        serverClient,
+                        executor
+                );
+
+        commandScheduler.start();
+
+        System.out.println("[AGENT] Remote Command Scheduler started.");
+
+
+        // =========================================
+        // 11. AGENT READY
+        // =========================================
+
+        System.out.println();
+        System.out.println("========================================");
+        System.out.println("          AGENT IS RUNNING");
+        System.out.println("========================================");
+
+        System.out.println("[AGENT] Heartbeat       : RUNNING");
+        System.out.println("[AGENT] Monitoring     : RUNNING");
+        System.out.println("[AGENT] Remote Command : RUNNING");
+        System.out.println("[AGENT] Screen Sharing : READY");
+        System.out.println("========================================");
     }
 }

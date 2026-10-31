@@ -13,11 +13,11 @@ public class ClientAgent {
     @Column(name = "agent_id", length = 50)
     private String agentId;
 
-    @OneToOne
+    @OneToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(
-        name = "client_id",
-        nullable = false,
-        unique = true
+            name = "client_id",
+            nullable = false,
+            unique = true
     )
     private Client client;
 
@@ -28,7 +28,7 @@ public class ClientAgent {
     @Column(name = "status", length = 20)
     private AgentStatus status;
 
-    @Column(name = "registered_at")
+    @Column(name = "registered_at", updatable = false)
     private LocalDateTime registeredAt;
 
     @Column(name = "last_connected_at")
@@ -41,6 +41,13 @@ public class ClientAgent {
     private LocalDateTime disconnectedAt;
 
     public ClientAgent() {
+    }
+
+    @PrePersist
+    protected void onCreate() {
+        if (registeredAt == null) {
+            registeredAt = LocalDateTime.now();
+        }
     }
 
     public String getAgentId() {

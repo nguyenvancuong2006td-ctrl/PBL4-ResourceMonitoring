@@ -5,8 +5,10 @@ import com.pbl4.server.enums.AccountStatus;
 import com.pbl4.server.model.Account;
 import com.pbl4.server.repository.AccountRepository;
 import com.pbl4.server.util.JwtUtil;
+
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 
@@ -27,27 +29,44 @@ public class AuthService {
         this.jwtUtil = jwtUtil;
     }
 
+    /**
+     * Xác thực tài khoản và tạo JWT khi đăng nhập thành công.
+     */
+    @Transactional
     public LoginResponse login(
             String username,
             String password) {
 
-        // 1. Tìm tài khoản
+        // 1. Kiểm tra dữ liệu đầu vào
+        if (username == null || username.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Username không được để trống"
+            );
+        }
+
+        if (password == null || password.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Mật khẩu không được để trống"
+            );
+        }
+
+        // 2. Tìm tài khoản
         Account account = accountRepository
-                .findByUsername(username)
+                .findByUsername(username.trim())
                 .orElseThrow(() ->
                         new RuntimeException(
-                                "Username không tồn tại"
+                                "Username hoặc mật khẩu không đúng"
                         )
                 );
 
-        // 2. Kiểm tra trạng thái tài khoản
+        // 3. Kiểm tra trạng thái tài khoản
         if (account.getStatus() != AccountStatus.ACTIVE) {
             throw new RuntimeException(
                     "Tài khoản chưa được kích hoạt hoặc đã bị khóa"
             );
         }
 
-        // 3. Kiểm tra email đã xác thực chưa
+        // 4. Kiểm tra email đã xác thực
         if (!Boolean.TRUE.equals(
                 account.getEmailVerified())) {
 
@@ -56,32 +75,38 @@ public class AuthService {
             );
         }
 
-        // 4. Kiểm tra password
-        if (!passwordEncoder.matches(
-                password,
-                account.getPasswordHash())) {
+        // 5. Kiểm tra mật khẩu
+        if (account.getPasswordHash() == null
+                || !passwordEncoder.matches(
+                        password,
+                        account.getPasswordHash())) {
 
             throw new RuntimeException(
-                    "Mật khẩu không đúng"
+                    "Username hoặc mật khẩu không đúng"
             );
         }
 
-        // 5. Cập nhật thời gian đăng nhập
-        account.setLastLoginAt(
-                LocalDateTime.now()
-        );
+        // 6. Kiểm tra vai trò
+        if (account.getRole() == null
+                || account.getRole().getRoleName() == null) {
 
-        account.setUpdateAt(
-                LocalDateTime.now()
-        );
+            throw new IllegalStateException(
+                    "Tài khoản chưa được gán vai trò"
+            );
+        }
+
+        // 7. Cập nhật thời gian đăng nhập
+        LocalDateTime now = LocalDateTime.now();
+
+        account.setLastLoginAt(now);
+        account.setUpdateAt(now);
 
         accountRepository.save(account);
 
-        // 6. Tạo JWT
-        String token =
-                jwtUtil.generateToken(account);
+        // 8. Tạo JWT
+        String token = jwtUtil.generateToken(account);
 
-        // 7. Trả thông tin đăng nhập
+        // 9. Trả thông tin đăng nhập
         return new LoginResponse(
                 token,
                 account.getUsername(),

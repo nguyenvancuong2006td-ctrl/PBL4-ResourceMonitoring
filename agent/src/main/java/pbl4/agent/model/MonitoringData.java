@@ -1,51 +1,59 @@
 package pbl4.agent.model;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 public class MonitoringData {
 
     private String agentId;
-
     private LocalDateTime collectedAt;
 
+    // ==============================
+    // CPU
+    // ==============================
+
     private double cpuUsage;
+
+    // Load Average trong 1 phút.
+    // -1.0 nghĩa là chưa lấy được dữ liệu hợp lệ.
+    private double loadAverage1m = -1.0;
 
     // ==============================
     // MEMORY
     // ==============================
 
     private double memoryUsage;
-
     private long totalMemory;
-
     private long usedMemory;
-
     private long availableMemory;
 
     // ==============================
-    // DISK
+    // DISK - TỔNG HỢP
     // ==============================
 
     private double diskUsage;
-
     private long totalDisk;
-
     private long usedDisk;
-
     private long availableDisk;
+
+    // ==============================
+    // DISK - CHI TIẾT TỪNG HỆ THỐNG TỆP
+    // ==============================
+
+    private List<DiskData> diskDataList = new ArrayList<>();
 
     // ==============================
     // NETWORK
     // ==============================
 
-    private List<NetworkData> networkDataList;
+    private List<NetworkData> networkDataList = new ArrayList<>();
 
     // ==============================
     // PROCESS
     // ==============================
 
-    private List<ProcessData> processDataList;
+    private List<ProcessData> processDataList = new ArrayList<>();
 
     // ==============================
     // CONSTRUCTOR
@@ -83,9 +91,13 @@ public class MonitoringData {
         this.usedDisk = usedDisk;
         this.availableDisk = availableDisk;
 
-        this.networkDataList = networkDataList;
+        this.networkDataList = networkDataList != null
+                ? networkDataList
+                : new ArrayList<>();
 
-        this.processDataList = processDataList;
+        this.processDataList = processDataList != null
+                ? processDataList
+                : new ArrayList<>();
     }
 
     // ==============================
@@ -122,6 +134,14 @@ public class MonitoringData {
 
     public void setCpuUsage(double cpuUsage) {
         this.cpuUsage = cpuUsage;
+    }
+
+    public double getLoadAverage1m() {
+        return loadAverage1m;
+    }
+
+    public void setLoadAverage1m(double loadAverage1m) {
+        this.loadAverage1m = loadAverage1m;
     }
 
     // ==============================
@@ -161,7 +181,7 @@ public class MonitoringData {
     }
 
     // ==============================
-    // DISK
+    // DISK - TỔNG HỢP
     // ==============================
 
     public double getDiskUsage() {
@@ -197,6 +217,20 @@ public class MonitoringData {
     }
 
     // ==============================
+    // DISK - DANH SÁCH CHI TIẾT
+    // ==============================
+
+    public List<DiskData> getDiskDataList() {
+        return diskDataList;
+    }
+
+    public void setDiskDataList(List<DiskData> diskDataList) {
+        this.diskDataList = diskDataList != null
+                ? diskDataList
+                : new ArrayList<>();
+    }
+
+    // ==============================
     // NETWORK
     // ==============================
 
@@ -207,7 +241,9 @@ public class MonitoringData {
     public void setNetworkDataList(
             List<NetworkData> networkDataList) {
 
-        this.networkDataList = networkDataList;
+        this.networkDataList = networkDataList != null
+                ? networkDataList
+                : new ArrayList<>();
     }
 
     // ==============================
@@ -221,7 +257,9 @@ public class MonitoringData {
     public void setProcessDataList(
             List<ProcessData> processDataList) {
 
-        this.processDataList = processDataList;
+        this.processDataList = processDataList != null
+                ? processDataList
+                : new ArrayList<>();
     }
 
     // ==============================
@@ -230,11 +268,11 @@ public class MonitoringData {
 
     @Override
     public String toString() {
-
         return "MonitoringData{" +
                 "agentId='" + agentId + '\'' +
                 ", collectedAt=" + collectedAt +
                 ", cpuUsage=" + cpuUsage +
+                ", loadAverage1m=" + loadAverage1m +
                 ", memoryUsage=" + memoryUsage +
                 ", totalMemory=" + totalMemory +
                 ", usedMemory=" + usedMemory +
@@ -243,6 +281,7 @@ public class MonitoringData {
                 ", totalDisk=" + totalDisk +
                 ", usedDisk=" + usedDisk +
                 ", availableDisk=" + availableDisk +
+                ", diskDataList=" + diskDataList +
                 ", networkDataList=" + networkDataList +
                 ", processDataList=" + processDataList +
                 '}';

@@ -1,5 +1,9 @@
 package com.pbl4.server.dto.request;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.PositiveOrZero;
+
+import java.util.ArrayList;
 import java.util.List;
 
 public class MonitoringDataRequest {
@@ -11,36 +15,66 @@ public class MonitoringDataRequest {
     // CPU
     // ==============================
 
+    @PositiveOrZero(message = "CPU Usage không được âm")
     private double cpuUsage;
+
+    /**
+     * CPU load average trong 1 phút.
+     * Giá trị -1.0 biểu thị không lấy được dữ liệu.
+     */
+    private double loadAverage1m = -1.0;
 
     // ==============================
     // MEMORY
     // ==============================
 
+    @PositiveOrZero(message = "Memory Usage không được âm")
     private double memoryUsage;
+
+    @PositiveOrZero(message = "Total Memory không được âm")
     private long totalMemory;
+
+    @PositiveOrZero(message = "Used Memory không được âm")
     private long usedMemory;
+
+    @PositiveOrZero(message = "Available Memory không được âm")
     private long availableMemory;
 
     // ==============================
-    // DISK
+    // DISK TỔNG HỢP
     // ==============================
 
+    @PositiveOrZero(message = "Disk Usage không được âm")
     private double diskUsage;
+
+    @PositiveOrZero(message = "Total Disk không được âm")
     private long totalDisk;
+
+    @PositiveOrZero(message = "Used Disk không được âm")
     private long usedDisk;
+
+    @PositiveOrZero(message = "Available Disk không được âm")
     private long availableDisk;
+
+    // ==============================
+    // DANH SÁCH DISK / PHÂN VÙNG
+    // ==============================
+
+    @Valid
+    private List<DiskDataRequest> diskData = new ArrayList<>();
 
     // ==============================
     // NETWORK
     // ==============================
 
+    @Valid
     private List<NetworkDataRequest> networkData;
 
     // ==============================
     // PROCESS
     // ==============================
 
+    @Valid
     private List<ProcessDataRequest> processData;
 
     // ==============================
@@ -82,6 +116,14 @@ public class MonitoringDataRequest {
         this.cpuUsage = cpuUsage;
     }
 
+    public double getLoadAverage1m() {
+        return loadAverage1m;
+    }
+
+    public void setLoadAverage1m(double loadAverage1m) {
+        this.loadAverage1m = loadAverage1m;
+    }
+
     // ==============================
     // MEMORY
     // ==============================
@@ -119,7 +161,7 @@ public class MonitoringDataRequest {
     }
 
     // ==============================
-    // DISK
+    // DISK TỔNG HỢP
     // ==============================
 
     public double getDiskUsage() {
@@ -155,6 +197,20 @@ public class MonitoringDataRequest {
     }
 
     // ==============================
+    // DANH SÁCH DISK / PHÂN VÙNG
+    // ==============================
+
+    public List<DiskDataRequest> getDiskData() {
+        return diskData;
+    }
+
+    public void setDiskData(List<DiskDataRequest> diskData) {
+        this.diskData = diskData != null
+                ? diskData
+                : new ArrayList<>();
+    }
+
+    // ==============================
     // NETWORK
     // ==============================
 
@@ -164,7 +220,6 @@ public class MonitoringDataRequest {
 
     public void setNetworkData(
             List<NetworkDataRequest> networkData) {
-
         this.networkData = networkData;
     }
 
@@ -178,7 +233,6 @@ public class MonitoringDataRequest {
 
     public void setProcessData(
             List<ProcessDataRequest> processData) {
-
         this.processData = processData;
     }
 }

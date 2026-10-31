@@ -1,8 +1,13 @@
+
 package com.pbl4.server.service;
 
+import com.pbl4.server.enums.ClientStatus;
 import com.pbl4.server.model.Client;
+import com.pbl4.server.repository.ClientAgentRepository;
 import com.pbl4.server.repository.ClientRepository;
+
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -11,47 +16,67 @@ import java.util.List;
 public class ClientService {
 
     private final ClientRepository clientRepository;
+    private final ClientAgentRepository clientAgentRepository;
 
-    public ClientService(ClientRepository clientRepository) {
+    public ClientService(
+            ClientRepository clientRepository,
+            ClientAgentRepository clientAgentRepository) {
+
         this.clientRepository = clientRepository;
+        this.clientAgentRepository = clientAgentRepository;
     }
 
-    // =========================
+    // ==========================================
     // THÊM CLIENT
-    // =========================
+    // ==========================================
+    @Transactional
     public Client createClient(Client client) {
 
-        if (client.getClientId() == null ||
-                client.getClientId().isBlank()) {
-
-            throw new RuntimeException(
-                    "Client ID không được để trống"
+        if (client == null) {
+            throw new IllegalArgumentException(
+                    "Thông tin Client không được null."
             );
         }
 
-        if (clientRepository.existsById(
-                client.getClientId())) {
+        String clientId = client.getClientId();
 
-            throw new RuntimeException(
-                    "Client ID đã tồn tại"
+        if (clientId == null || clientId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Client ID không được để trống."
+            );
+        }
+
+        final String normalizedClientId = clientId.trim();
+
+        if (clientRepository.existsById(normalizedClientId)) {
+            throw new IllegalArgumentException(
+                    "Client ID đã tồn tại."
             );
         }
 
         // Kiểm tra IP trùng
-        if (client.getIpAddress() != null &&
-                clientRepository
-                        .findByIpAddress(
-                                client.getIpAddress()
-                        )
-                        .isPresent()) {
+        String ipAddress = client.getIpAddress();
 
-            throw new RuntimeException(
-                    "IP address đã tồn tại"
-            );
+        if (ipAddress != null && !ipAddress.isBlank()) {
+
+            ipAddress = ipAddress.trim();
+
+            if (clientRepository.findByIpAddress(ipAddress).isPresent()) {
+                throw new IllegalArgumentException(
+                        "IP address đã tồn tại."
+                );
+            }
+
+            client.setIpAddress(ipAddress);
         }
 
-        LocalDateTime now =
-                LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now();
+
+        client.setClientId(normalizedClientId);
+
+        // Client mới chưa có Agent hoạt động nên mặc định OFFLINE
+        client.setStatus(ClientStatus.OFFLINE);
+        client.setLastSeenAt(null);
 
         client.setCreatedAt(now);
         client.setUpdatedAt(now);
@@ -59,139 +84,166 @@ public class ClientService {
         return clientRepository.save(client);
     }
 
-    // =========================
+    // ==========================================
     // LẤY TẤT CẢ CLIENT
-    // =========================
+    // ==========================================
+    @Transactional(readOnly = true)
     public List<Client> getAllClients() {
 
         return clientRepository.findAll();
     }
 
-    // =========================
+    // ==========================================
     // LẤY CLIENT THEO ID
-    // =========================
-    public Client getClientById(
-            String clientId) {
+    // ==========================================
+    @Transactional(readOnly = true)
+    public Client getClientById(String clientId) {
 
-        return clientRepository
-                .findById(clientId)
+        if (clientId == null || clientId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Client ID không được để trống."
+            );
+        }
+
+        final String normalizedClientId = clientId.trim();
+
+        return clientRepository.findById(normalizedClientId)
                 .orElseThrow(() ->
-                        new RuntimeException(
+                        new IllegalArgumentException(
                                 "Không tìm thấy Client: "
-                                        + clientId
+                                + normalizedClientId
                         )
                 );
     }
 
-    // =========================
+    // ==========================================
     // LẤY CLIENT THEO IP
-    // =========================
-    public Client getClientByIp(
-            String ipAddress) {
+    // ==========================================
+    @Transactional(readOnly = true)
+    public Client getClientByIp(String ipAddress) {
 
-        return clientRepository
-                .findByIpAddress(ipAddress)
+        if (ipAddress == null || ipAddress.isBlank()) {
+            throw new IllegalArgumentException(
+                    "IP address không được để trống."
+            );
+        }
+
+        final String normalizedIpAddress = ipAddress.trim();
+
+        return clientRepository.findByIpAddress(normalizedIpAddress)
                 .orElseThrow(() ->
-                        new RuntimeException(
+                        new IllegalArgumentException(
                                 "Không tìm thấy Client với IP: "
-                                        + ipAddress
+                                + normalizedIpAddress
                         )
                 );
     }
 
-    // =========================
+    // ==========================================
     // CẬP NHẬT CLIENT
-    // =========================
+    // ==========================================
+    @Transactional
     public Client updateClient(
             String clientId,
             Client clientData) {
 
-        Client client = clientRepository
-                .findById(clientId)
+        if (clientId == null || clientId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Client ID không được để trống."
+            );
+        }
+
+        if (clientData == null) {
+            throw new IllegalArgumentException(
+                    "Thông tin cập nhật không được null."
+            );
+        }
+
+        final String normalizedClientId = clientId.trim();
+
+        Client client = clientRepository.findById(normalizedClientId)
                 .orElseThrow(() ->
-                        new RuntimeException(
+                        new IllegalArgumentException(
                                 "Không tìm thấy Client: "
-                                        + clientId
+                                + normalizedClientId
                         )
                 );
 
         // Kiểm tra IP mới có trùng Client khác không
-        if (clientData.getIpAddress() != null) {
+        String newIpAddress = clientData.getIpAddress();
 
-            clientRepository
-                    .findByIpAddress(
-                            clientData.getIpAddress()
-                    )
+        if (newIpAddress != null && !newIpAddress.isBlank()) {
+
+            newIpAddress = newIpAddress.trim();
+
+            final String checkedIpAddress = newIpAddress;
+
+            clientRepository.findByIpAddress(checkedIpAddress)
                     .ifPresent(existingClient -> {
 
-                        if (!existingClient
-                                .getClientId()
-                                .equals(clientId)) {
+                        if (!existingClient.getClientId()
+                                .equals(normalizedClientId)) {
 
-                            throw new RuntimeException(
-                                    "IP address đã tồn tại"
+                            throw new IllegalArgumentException(
+                                    "IP address đã tồn tại."
                             );
                         }
                     });
         }
 
-        client.setHostname(
-                clientData.getHostname()
-        );
-
-        client.setIpAddress(
-                clientData.getIpAddress()
-        );
-
-        client.setOsName(
-                clientData.getOsName()
-        );
-
-        client.setOsVersion(
-                clientData.getOsVersion()
-        );
-
-        client.setKernelVersion(
-                clientData.getKernelVersion()
-        );
-
-        client.setBootTime(
-                clientData.getBootTime()
-        );
-
-        client.setManagementNote(
-                clientData.getManagementNote()
-        );
+        // Cập nhật thông tin Client
+        client.setHostname(clientData.getHostname());
+        client.setIpAddress(newIpAddress);
+        client.setOsName(clientData.getOsName());
+        client.setOsVersion(clientData.getOsVersion());
+        client.setKernelVersion(clientData.getKernelVersion());
+        client.setBootTime(clientData.getBootTime());
+        client.setManagementNote(clientData.getManagementNote());
 
         /*
-         * Không cập nhật status và lastSeenAt
-         * từ API quản lý.
-         *
-         * Hai trường này được cập nhật
-         * bởi heartbeat.
+         * Không cập nhật status và lastSeenAt tại đây.
+         * Hai trường này được quản lý bởi heartbeat
+         * và OfflineDetectionScheduler.
          */
 
-        client.setUpdatedAt(
-                LocalDateTime.now()
-        );
+        client.setUpdatedAt(LocalDateTime.now());
 
         return clientRepository.save(client);
     }
 
-    // =========================
+    // ==========================================
     // XÓA CLIENT
-    // =========================
-    public void deleteClient(
-            String clientId) {
+    // ==========================================
+    @Transactional
+    public void deleteClient(String clientId) {
 
-        if (!clientRepository.existsById(clientId)) {
-
-            throw new RuntimeException(
-                    "Không tìm thấy Client: "
-                            + clientId
+        if (clientId == null || clientId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Client ID không được để trống."
             );
         }
-        
-        clientRepository.deleteById(clientId);
+
+        final String normalizedClientId = clientId.trim();
+
+        Client client = clientRepository.findById(normalizedClientId)
+                .orElseThrow(() ->
+                        new IllegalArgumentException(
+                                "Không tìm thấy Client: "
+                                + normalizedClientId
+                        )
+                );
+
+        // Không xóa Client khi vẫn còn Agent liên kết
+        if (clientAgentRepository
+                .findByClientClientId(normalizedClientId)
+                .isPresent()) {
+
+            throw new IllegalStateException(
+                    "Không thể xóa Client vì vẫn còn Agent đang liên kết. "
+                    + "Hãy xử lý Agent trước."
+            );
+        }
+
+        clientRepository.delete(client);
     }
 }

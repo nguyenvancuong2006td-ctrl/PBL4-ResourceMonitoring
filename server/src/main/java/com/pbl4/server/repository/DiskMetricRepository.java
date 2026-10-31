@@ -13,4 +13,4 @@ public interface DiskMetricRepository
 
     List<DiskMetric>
     findByDiskDiskIdOrderBySnapshotCollectedAtDesc(Long diskId);
-}
+}   

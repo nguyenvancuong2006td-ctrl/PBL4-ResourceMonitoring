@@ -8,15 +8,15 @@ public class CpuMonitorService {
     private final CentralProcessor processor;
 
     public CpuMonitorService() {
+        SystemInfo systemInfo = new SystemInfo();
 
-        SystemInfo systemInfo =
-                new SystemInfo();
-
-        this.processor =
-                systemInfo.getHardware()
-                        .getProcessor();
+        this.processor = systemInfo.getHardware()
+                .getProcessor();
     }
 
+    /**
+     * Lấy phần trăm sử dụng CPU.
+     */
     public double getCpuUsage() {
 
         long[] previousTicks =
@@ -26,6 +26,7 @@ public class CpuMonitorService {
             Thread.sleep(1000);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return 0.0;
         }
 
         double cpuUsage =
@@ -33,6 +34,23 @@ public class CpuMonitorService {
                         previousTicks
                 ) * 100;
 
-        return cpuUsage;
+        return Math.max(0.0, cpuUsage);
+    }
+
+    /**
+     * Lấy CPU Load Average trong 1 phút.
+     */
+    public double getLoadAverage1m() {
+
+        double[] loadAverage =
+                processor.getSystemLoadAverage(1);
+
+        if (loadAverage == null
+                || loadAverage.length == 0
+                || loadAverage[0] < 0) {
+            return -1.0;
+        }
+
+        return loadAverage[0];
     }
 }

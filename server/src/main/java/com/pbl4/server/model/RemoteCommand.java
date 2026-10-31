@@ -31,6 +31,13 @@ public class RemoteCommand {
     @Column(name = "status", length = 20)
     private CommandStatus status;
 
+    /*
+     * Tham số của lệnh, lưu dưới dạng JSON.
+     * Ví dụ: {"pid":1234}
+     */
+    @Column(name = "parameters", columnDefinition = "json")
+    private String parameters;
+
     @Column(name = "result")
     private String result;
 
@@ -89,6 +96,14 @@ public class RemoteCommand {
         this.status = status;
     }
 
+    public String getParameters() {
+        return parameters;
+    }
+
+    public void setParameters(String parameters) {
+        this.parameters = parameters;
+    }
+
     public String getResult() {
         return result;
     }
@@ -113,19 +128,19 @@ public class RemoteCommand {
         this.sentAt = sentAt;
     }
 
-    public LocalDateTime getStartedAt() {
-        return startedAt;
-    }
-
-    public void setStartedAt(LocalDateTime startedAt) {
-        this.startedAt = startedAt;
-    }
-
     public LocalDateTime getCompletedAt() {
         return completedAt;
     }
 
     public void setCompletedAt(LocalDateTime completedAt) {
         this.completedAt = completedAt;
+    }
+
+    public LocalDateTime getStartedAt() {
+        return startedAt;
+    }
+
+    public void setStartedAt(LocalDateTime startedAt) {
+        this.startedAt = startedAt;
     }
 }

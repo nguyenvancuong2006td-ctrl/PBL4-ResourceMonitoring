@@ -6,7 +6,15 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "agent_credentials")
+@Table(
+    name = "agent_credentials",
+    uniqueConstraints = {
+        @UniqueConstraint(
+            name = "uk_agent_credentials_agent_id",
+            columnNames = "agent_id"
+        )
+    }
+)
 public class AgentCredential {
 
     @Id
@@ -14,22 +22,35 @@ public class AgentCredential {
     @Column(name = "credential_id")
     private Long credentialId;
 
-    @OneToOne
+    // Mỗi Agent chỉ có một Credential
+    @OneToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(
         name = "agent_id",
         nullable = false,
-        unique = true
+        unique = true,
+        foreignKey = @ForeignKey(
+            name = "fk_agent_credentials_agent"
+        )
     )
     private ClientAgent agent;
 
-    @Column(name = "credential_hash", length = 255, nullable = false)
+    // Chỉ lưu mã băm BCrypt, không lưu Credential gốc
+    @Column(
+        name = "credential_hash",
+        length = 255,
+        nullable = false
+    )
     private String credentialHash;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "status", length = 20)
+    @Column(
+        name = "status",
+        length = 20,
+        nullable = false
+    )
     private CredentialStatus status;
 
-    @Column(name = "issued_at")
+    @Column(name = "issued_at", nullable = false)
     private LocalDateTime issuedAt;
 
     @Column(name = "expires_at")
