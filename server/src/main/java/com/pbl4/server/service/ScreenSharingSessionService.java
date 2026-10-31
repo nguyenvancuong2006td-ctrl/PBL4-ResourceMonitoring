@@ -288,6 +288,40 @@ public class ScreenSharingSessionService {
     }
 
     /**
+     * Agent đã ngắt kết nối /ws/screen: đánh dấu phiên đã kết thúc.
+     *
+     * Chỉ xử lý phiên còn đang hoạt động; phiên đã ENDED/FAILED giữ nguyên.
+     */
+    @Transactional
+    public void markAgentDisconnected(String sessionCode) {
+
+        if (sessionCode == null || sessionCode.isBlank()) {
+            return;
+        }
+
+        ScreenSharingSession session = sessionRepository
+                .findBySessionCode(sessionCode)
+                .orElse(null);
+
+        if (session == null
+                || !ACTIVE_STATUSES.contains(session.getStatus())) {
+
+            return;
+        }
+
+        // Admin đã yêu cầu dừng: đây là kết thúc bình thường
+        boolean adminStopped =
+                session.getStatus() == ScreenSharingStatus.STOPPING;
+
+        session.setStatus(ScreenSharingStatus.ENDED);
+        session.setEndedAt(LocalDateTime.now());
+        session.setEndReason(
+                adminStopped ? "ADMIN_STOPPED" : "AGENT_DISCONNECTED");
+
+        sessionRepository.save(session);
+    }
+
+    /**
      * Tạo JSON parameters chứa sessionCode.
      */
     private String createSessionParameters(String sessionCode) {

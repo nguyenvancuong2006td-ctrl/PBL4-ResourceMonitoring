@@ -3,13 +3,20 @@ package pbl4.agent;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.WebApplicationType;
+import org.springframework.context.ConfigurableApplicationContext;
 
+import pbl4.agent.client.RegistrationClient;
 import pbl4.agent.client.ServerClient;
 import pbl4.agent.config.AgentConfig;
+import pbl4.agent.config.AgentSettings;
 import pbl4.agent.model.ClientSystemInfo;
 
 import pbl4.agent.monitoring.ClientInfoService;
 import pbl4.agent.monitoring.MonitoringService;
+
+import pbl4.agent.registration.CredentialStorage;
+import pbl4.agent.registration.RegistrationFailedException;
+import pbl4.agent.registration.RegistrationManager;
 
 import pbl4.agent.scheduler.HeartbeatScheduler;
 import pbl4.agent.scheduler.MonitoringScheduler;
@@ -33,33 +40,8 @@ public class AgentApplication {
 
 
         // =========================================
-        // 2. LOAD AGENT CONFIGURATION
-        // =========================================
-
-        AgentConfig config = new AgentConfig(
-                "http://localhost:8080",
-                "AGENT-001",
-                "1.0.0",
-                System.getenv("PBL4_AGENT_CREDENTIAL")
-        );
-
-        // Kiểm tra Agent Credential
-
-        if (config.getCredential() == null
-                || config.getCredential().isBlank()) {
-
-            throw new IllegalStateException(
-                    "Chưa cấu hình biến môi trường "
-                            + "PBL4_AGENT_CREDENTIAL"
-            );
-        }
-
-        System.out.println("[AGENT] Đã tải cấu hình thành công.");
-        System.out.println("[AGENT] Agent ID: " + config.getAgentId());
-
-
-        // =========================================
-        // 3. START SPRING APPLICATION
+        // 2. START SPRING APPLICATION
+        //    (chỉ dùng để nạp cấu hình)
         // =========================================
 
         SpringApplication app =
@@ -69,13 +51,114 @@ public class AgentApplication {
                 WebApplicationType.NONE
         );
 
-        app.run(args);
+        ConfigurableApplicationContext context =
+                app.run(args);
 
         System.out.println("[AGENT] Spring Application started.");
 
 
         // =========================================
-        // 4. INITIALIZE SERVER CLIENT
+        // 3. LOAD AGENT SETTINGS
+        //    (Server URL, version, thư mục lưu dữ liệu...)
+        // =========================================
+
+        AgentSettings settings;
+
+        try {
+            settings = AgentSettings.load(
+                    context.getEnvironment()::getProperty
+            );
+
+        } catch (IllegalArgumentException e) {
+
+            System.err.println(
+                    "[AGENT] Cấu hình không hợp lệ: "
+                            + e.getMessage()
+            );
+
+            context.close();
+            System.exit(1);
+            return;
+        }
+
+        System.out.println("[AGENT] Đã tải cấu hình thành công.");
+        System.out.println("[AGENT] Server URL : " + settings.getServerUrl());
+        System.out.println("[AGENT] Data Dir   : " + settings.getDataDir());
+
+
+        // =========================================
+        // 4. AGENT REGISTRATION
+        //
+        //    RegistrationManager
+        //      -> đọc trạng thái lưu cục bộ
+        //      -> đã đăng ký: kiểm tra Credential còn hợp lệ
+        //      -> chưa đăng ký: RegistrationClient gửi yêu cầu lên Server
+        //      -> RegistrationScheduler poll trạng thái yêu cầu
+        //      -> CredentialStorage lưu Credential rồi gửi ACK
+        //
+        //    Chặn tại đây cho đến khi Agent có Credential hợp lệ.
+        // =========================================
+
+        ClientInfoService clientInfoService =
+                new ClientInfoService();
+
+        CredentialStorage credentialStorage =
+                new CredentialStorage(settings.getDataDir());
+
+        RegistrationClient registrationClient =
+                new RegistrationClient(settings.getServerUrl());
+
+        RegistrationManager registrationManager =
+                new RegistrationManager(
+                        settings,
+                        credentialStorage,
+                        registrationClient,
+                        () -> clientInfoService.getClientInfo(
+                                "UNREGISTERED"
+                        )
+                );
+
+        AgentConfig config;
+
+        try {
+            config = registrationManager.ensureRegistered();
+
+        } catch (RegistrationFailedException e) {
+
+            System.err.println();
+            System.err.println("========================================");
+            System.err.println("      ĐĂNG KÝ AGENT KHÔNG THÀNH CÔNG");
+            System.err.println("========================================");
+            System.err.println("[AGENT] " + e.getMessage());
+            System.err.println(
+                    "[AGENT] Khởi động lại Agent để gửi yêu cầu đăng ký mới."
+            );
+
+            context.close();
+            System.exit(1);
+            return;
+
+        } catch (InterruptedException e) {
+
+            Thread.currentThread().interrupt();
+
+            System.err.println(
+                    "[AGENT] Bị ngắt trong lúc chờ đăng ký. Đang thoát."
+            );
+
+            context.close();
+            System.exit(1);
+            return;
+        }
+
+        System.out.println(
+                "[AGENT] Đăng ký hoàn tất. Agent ID: "
+                        + config.getAgentId()
+        );
+
+
+        // =========================================
+        // 5. INITIALIZE SERVER CLIENT
         // =========================================
 
         ServerClient serverClient =
@@ -85,7 +168,7 @@ public class AgentApplication {
 
 
         // =========================================
-        // 5. START HEARTBEAT SCHEDULER
+        // 6. START HEARTBEAT SCHEDULER
         // =========================================
 
         HeartbeatScheduler heartbeatScheduler =
@@ -97,11 +180,8 @@ public class AgentApplication {
 
 
         // =========================================
-        // 6. GET CLIENT SYSTEM INFORMATION
+        // 7. GET CLIENT SYSTEM INFORMATION
         // =========================================
-
-        ClientInfoService clientInfoService =
-                new ClientInfoService();
 
         ClientSystemInfo info =
                 clientInfoService.getClientInfo(
@@ -143,7 +223,7 @@ public class AgentApplication {
 
 
         // =========================================
-        // 7. INITIALIZE MONITORING SERVICE
+        // 8. INITIALIZE MONITORING SERVICE
         // =========================================
 
         MonitoringService monitoringService =
@@ -153,7 +233,7 @@ public class AgentApplication {
 
 
         // =========================================
-        // 8. START MONITORING SCHEDULER
+        // 9. START MONITORING SCHEDULER
         // =========================================
 
         MonitoringScheduler monitoringScheduler =
@@ -169,7 +249,7 @@ public class AgentApplication {
 
 
         // =========================================
-        // 9. INITIALIZE REMOTE COMMAND EXECUTOR
+        // 10. INITIALIZE REMOTE COMMAND EXECUTOR
         // =========================================
 
         RemoteCommandExecutor executor =
@@ -179,7 +259,7 @@ public class AgentApplication {
 
 
         // =========================================
-        // 10. START REMOTE COMMAND SCHEDULER
+        // 11. START REMOTE COMMAND SCHEDULER
         // =========================================
 
         RemoteCommandScheduler commandScheduler =
@@ -194,7 +274,7 @@ public class AgentApplication {
 
 
         // =========================================
-        // 11. AGENT READY
+        // 12. AGENT READY
         // =========================================
 
         System.out.println();

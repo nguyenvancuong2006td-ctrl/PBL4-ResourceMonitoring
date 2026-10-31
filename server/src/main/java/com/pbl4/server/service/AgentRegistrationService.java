@@ -26,7 +26,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 @Service
 @Transactional
@@ -39,19 +38,22 @@ public class AgentRegistrationService {
     private final ClientRepository clientRepository;
     private final AgentCredentialService agentCredentialService;
     private final CredentialEncryptionService credentialEncryptionService;
+    private final ClientAgentIdGenerator clientAgentIdGenerator;
 
     public AgentRegistrationService(
             AgentRegistrationRequestRepository registrationRequestRepository,
             ClientAgentRepository clientAgentRepository,
             ClientRepository clientRepository,
             AgentCredentialService agentCredentialService,
-            CredentialEncryptionService credentialEncryptionService) {
+            CredentialEncryptionService credentialEncryptionService,
+            ClientAgentIdGenerator clientAgentIdGenerator) {
 
         this.registrationRequestRepository = registrationRequestRepository;
         this.clientAgentRepository = clientAgentRepository;
         this.clientRepository = clientRepository;
         this.agentCredentialService = agentCredentialService;
         this.credentialEncryptionService = credentialEncryptionService;
+        this.clientAgentIdGenerator = clientAgentIdGenerator;
     }
 
     // ==================================================
@@ -75,8 +77,12 @@ public class AgentRegistrationService {
             );
         }
 
-        String clientId = "CLI-" + UUID.randomUUID();
-        String agentId = "AGT-" + UUID.randomUUID();
+        // ID dạng CLIENT-001 / AGENT-001, cùng số thứ tự
+        ClientAgentIdGenerator.GeneratedIds ids =
+                clientAgentIdGenerator.next();
+
+        String clientId = ids.clientId();
+        String agentId = ids.agentId();
 
         LocalDateTime now = LocalDateTime.now();
 

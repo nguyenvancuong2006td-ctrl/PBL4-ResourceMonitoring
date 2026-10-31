@@ -1,6 +1,7 @@
 package pbl4.agent.client;
 
 import pbl4.agent.config.AgentConfig;
+import pbl4.agent.model.DiskData;
 import pbl4.agent.model.MonitoringData;
 import pbl4.agent.model.RemoteCommandData;
 import pbl4.agent.model.NetworkData;
@@ -256,6 +257,7 @@ public class ServerClient {
                 System.err.println(
                         "[AGENT] Gửi Monitoring Data thất bại. HTTP "
                                 + response.statusCode()
+                                + describeBody(response.body())
                 );
 
                 return false;
@@ -615,6 +617,13 @@ public class ServerClient {
             );
 
             payload.put(
+                    "diskData",
+                    buildDiskPayload(
+                            data.getDiskDataList()
+                    )
+            );
+
+            payload.put(
                     "networkData",
                     buildNetworkPayload(
                             data.getNetworkDataList()
@@ -636,6 +645,107 @@ public class ServerClient {
                     e
             );
         }
+    }
+
+    // ==========================================
+    // DISK JSON
+    // ==========================================
+
+    // Giới hạn cột trong database (disk_info)
+    private static final int MAX_DEVICE_NAME_LENGTH = 50;
+    private static final int MAX_MOUNT_POINT_LENGTH = 100;
+
+    /**
+     * Server bắt buộc mỗi ổ đĩa phải có tên thiết bị và mount point,
+     * dung lượng hợp lệ, không trùng nhau. Dữ liệu từ OSHI đôi khi
+     * không đáp ứng, nên làm sạch tại đây để một ổ đĩa lạ không
+     * làm hỏng cả lần gửi.
+     */
+    private List<Map<String, Object>> buildDiskPayload(
+            List<DiskData> disks) {
+
+        List<Map<String, Object>> result =
+                new ArrayList<>();
+
+        if (disks == null) {
+            return result;
+        }
+
+        java.util.Set<String> seen = new java.util.HashSet<>();
+
+        for (DiskData disk : disks) {
+
+            if (disk == null || disk.getTotalSpace() <= 0) {
+                continue;
+            }
+
+            String mountPoint = disk.getMountPoint() == null
+                    ? ""
+                    : disk.getMountPoint().trim();
+
+            if (mountPoint.isEmpty()) {
+                continue;
+            }
+
+            String name = disk.getName() == null
+                    ? ""
+                    : disk.getName().trim();
+
+            // Không có tên thiết bị thì dùng mount point thay thế
+            if (name.isEmpty()) {
+                name = mountPoint;
+            }
+
+            if (name.length() > MAX_DEVICE_NAME_LENGTH) {
+                name = name.substring(0, MAX_DEVICE_NAME_LENGTH);
+            }
+
+            if (mountPoint.length() > MAX_MOUNT_POINT_LENGTH) {
+                mountPoint = mountPoint.substring(
+                        0,
+                        MAX_MOUNT_POINT_LENGTH
+                );
+            }
+
+            // Server từ chối nếu trùng (tên thiết bị + mount point)
+            if (!seen.add(name + "\0" + mountPoint)) {
+                continue;
+            }
+
+            long total = disk.getTotalSpace();
+
+            long used = Math.min(
+                    Math.max(0L, disk.getUsedSpace()),
+                    total
+            );
+
+            long usable = Math.min(
+                    Math.max(0L, disk.getUsableSpace()),
+                    total
+            );
+
+            double percent = disk.getUsagePercent();
+
+            if (!Double.isFinite(percent)) {
+                percent = 0.0;
+            }
+
+            percent = Math.min(100.0, Math.max(0.0, percent));
+
+            Map<String, Object> item =
+                    new LinkedHashMap<>();
+
+            item.put("name", name);
+            item.put("mountPoint", mountPoint);
+            item.put("totalSpace", total);
+            item.put("usedSpace", used);
+            item.put("usableSpace", usable);
+            item.put("usagePercent", percent);
+
+            result.add(item);
+        }
+
+        return result;
     }
 
     // ==========================================
@@ -734,6 +844,25 @@ public class ServerClient {
         }
 
         return result;
+    }
+
+    // ==========================================
+    // LÝ DO LỖI TỪ SERVER
+    // ==========================================
+
+    private String describeBody(String body) {
+
+        if (body == null || body.isBlank()) {
+            return "";
+        }
+
+        String text = body.trim();
+
+        if (text.length() > 200) {
+            text = text.substring(0, 200);
+        }
+
+        return " - " + text;
     }
 
     // ==========================================

@@ -479,9 +479,11 @@ public class RemoteCommandService {
 
             if (success) {
 
-                // Không ghi đè STOPPING nếu Admin đã yêu cầu dừng.
-                if (session.getStatus()
-                        != ScreenSharingStatus.STOPPING) {
+                // Chỉ chuyển sang ACTIVE khi phiên còn đang khởi động
+                // (không ghi đè STOPPING, ENDED hoặc FAILED).
+                if (session.getStatus() == ScreenSharingStatus.REQUESTED
+                        || session.getStatus()
+                                == ScreenSharingStatus.STARTING) {
 
                     session.setStatus(ScreenSharingStatus.ACTIVE);
                     session.setStartedAt(now);

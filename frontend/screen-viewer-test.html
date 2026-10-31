@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PBL4 · Trình xem màn hình (thử nghiệm)</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #667085;
+    --line: #d9dde3; --accent: #0b6bcb; --ok: #1a7f4b; --bad: #b42318;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #8b95a5;
+      --line: #2a3039; --accent: #4c9aff; --ok: #3ccf82; --bad: #ff7b72;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+  form { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+         padding: 16px; display: grid; gap: 12px; }
+  label { display: grid; gap: 4px; color: var(--muted); font-size: 13px; }
+  input, textarea { font: inherit; color: var(--text); background: var(--bg);
+         border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  textarea { height: 72px; resize: vertical; font-family: ui-monospace, monospace; font-size: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; padding: 8px 16px; border-radius: 6px; cursor: pointer;
+           border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+  button.secondary { background: transparent; color: var(--text); border-color: var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { color: var(--muted); }
+  #status.ok { color: var(--ok); } #status.bad { color: var(--bad); }
+  .screen { background: #000; border: 1px solid var(--line); border-radius: 8px;
+            display: grid; place-items: center; min-height: 240px; overflow: hidden; }
+  canvas { max-width: 100%; height: auto; display: block; }
+  .stats { color: var(--muted); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <form id="form">
+    <label>Địa chỉ WebSocket
+      <input id="url" value="ws://localhost:8080/ws/screen" required>
+    </label>
+    <label>JWT của Admin (lấy từ phản hồi của /api/auth/login)
+      <textarea id="token" required spellcheck="false"></textarea>
+    </label>
+    <label>Session code (lấy từ phản hồi của POST /api/screen-sharing/sessions)
+      <input id="session" required spellcheck="false">
+    </label>
+    <div class="row">
+      <button id="connect" type="submit">Kết nối</button>
+      <button id="disconnect" class="secondary" type="button" disabled>Ngắt</button>
+      <span id="status">Chưa kết nối.</span>
+    </div>
+  </form>
+
+  <div class="screen"><canvas id="canvas" width="16" height="9"></canvas></div>
+  <div class="stats" id="stats">Khung hình: 0 · FPS: 0 · Kích thước: –</div>
+</main>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const canvas = $('canvas'), ctx = canvas.getContext('2d');
+  let ws = null, frames = 0, windowFrames = 0, lastBytes = 0;
+
+  function setStatus(text, kind) {
+    const el = $('status');
+    el.textContent = text;
+    el.className = kind || '';
+  }
+
+  function setConnected(on) {
+    $('connect').disabled = on;
+    $('disconnect').disabled = !on;
+  }
+
+  async function drawFrame(buffer) {
+    try {
+      const bitmap = await createImageBitmap(new Blob([buffer], { type: 'image/jpeg' }));
+      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+      }
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      frames++; windowFrames++; lastBytes = buffer.byteLength;
+    } catch (e) { /* khung hình hỏng: bỏ qua */ }
+  }
+
+  setInterval(() => {
+    $('stats').textContent =
+      `Khung hình: ${frames} · FPS: ${windowFrames} · Kích thước: ` +
+      (lastBytes ? (lastBytes / 1024).toFixed(0) + ' KB' : '–');
+    windowFrames = 0;
+  }, 1000);
+
+  $('form').addEventListener('submit', e => {
+    e.preventDefault();
+    frames = 0;
+    setStatus('Đang kết nối...');
+    setConnected(true);
+
+    ws = new WebSocket($('url').value.trim());
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => ws.send(JSON.stringify({
+      type: 'AUTH', role: 'VIEWER',
+      token: $('token').value.trim(),
+      sessionCode: $('session').value.trim()
+    }));
+
+    ws.onmessage = ev => {
+      if (typeof ev.data !== 'string') { drawFrame(ev.data); return; }
+      const msg = JSON.parse(ev.data);
+      switch (msg.type) {
+        case 'JOINED':
+          setStatus(msg.agentConnected
+            ? 'Đã vào phiên. Đang chờ khung hình...'
+            : 'Đã vào phiên. Đang chờ Agent kết nối...', 'ok'); break;
+        case 'AGENT_CONNECTED': setStatus('Agent đã kết nối.', 'ok'); break;
+        case 'STATUS': setStatus('Agent: ' + (msg.message || msg.state), 'ok'); break;
+        case 'ERROR':  setStatus('Lỗi: ' + msg.message, 'bad'); break;
+        case 'ENDED':  setStatus('Phiên kết thúc: ' + msg.message, 'bad'); break;
+      }
+    };
+
+    ws.onclose = ev => {
+      setConnected(false);
+      if (!$('status').classList.contains('bad')) {
+        setStatus('Đã đóng kết nối (mã ' + ev.code + ').');
+      }
+    };
+    ws.onerror = () => setStatus('Không kết nối được tới Server.', 'bad');
+  });
+
+  $('disconnect').addEventListener('click', () => ws && ws.close());
+</script>
+</body>
+</html>
