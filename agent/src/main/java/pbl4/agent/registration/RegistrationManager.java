@@ -61,6 +61,8 @@ public class RegistrationManager {
     private static final int MAX_IP_LENGTH = 50;
     private static final int MAX_OS_FIELD_LENGTH = 50;
     private static final int MAX_VERSION_LENGTH = 20;
+    private static final int MAX_CPU_MODEL_LENGTH = 100;
+    private static final int MAX_CPU_VENDOR_LENGTH = 50;
 
     private static final int TOKEN_BYTE_LENGTH = 32;
 
@@ -338,6 +340,15 @@ public class RegistrationManager {
                 sanitize(settings.getVersion(), MAX_VERSION_LENGTH),
                 token
         );
+
+        // Phần cứng là thông tin bổ sung: thiếu thì để null, Server vẫn nhận.
+        data.setCpuModel(truncate(system.getCpuModel(), MAX_CPU_MODEL_LENGTH));
+        data.setCpuManufacturer(
+                truncate(system.getCpuManufacturer(), MAX_CPU_VENDOR_LENGTH));
+        data.setCpuCoreCount(system.getCpuCoreCount());
+        data.setCpuThreadCount(system.getCpuThreadCount());
+        data.setCpuFrequencyMhz(system.getCpuFrequencyMhz());
+        data.setMemoryTotalBytes(system.getMemoryTotalBytes());
 
         RegistrationResponse response;
 
@@ -689,6 +700,19 @@ public class RegistrationManager {
     /**
      * Server yêu cầu các trường không rỗng và có giới hạn độ dài.
      */
+    private String truncate(String value, int maxLength) {
+
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+
+        String result = value.trim();
+
+        return result.length() > maxLength
+                ? result.substring(0, maxLength)
+                : result;
+    }
+
     private String sanitize(String value, int maxLength) {
 
         String result = value == null ? "" : value.trim();

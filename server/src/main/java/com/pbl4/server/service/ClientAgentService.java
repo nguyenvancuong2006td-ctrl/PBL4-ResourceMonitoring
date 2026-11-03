@@ -3,11 +3,14 @@ package com.pbl4.server.service;
 
 import com.pbl4.server.enums.AgentStatus;
 import com.pbl4.server.enums.ClientStatus;
+import com.pbl4.server.dto.response.PageResponse;
 import com.pbl4.server.model.Client;
 import com.pbl4.server.model.ClientAgent;
 import com.pbl4.server.repository.ClientAgentRepository;
 import com.pbl4.server.repository.ClientRepository;
 
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,13 +22,16 @@ public class ClientAgentService {
 
     private final ClientAgentRepository clientAgentRepository;
     private final ClientRepository clientRepository;
+    private final ClientDataPurgeService clientDataPurgeService;
 
     public ClientAgentService(
             ClientAgentRepository clientAgentRepository,
-            ClientRepository clientRepository) {
+            ClientRepository clientRepository,
+            ClientDataPurgeService clientDataPurgeService) {
 
         this.clientAgentRepository = clientAgentRepository;
         this.clientRepository = clientRepository;
+        this.clientDataPurgeService = clientDataPurgeService;
     }
 
     // ==========================================
@@ -268,6 +274,18 @@ public class ClientAgentService {
     // ==========================================
     // XÓA AGENT
     // ==========================================
+
+    /**
+     * Xóa Agent cùng Client của Agent và toàn bộ dữ liệu liên quan:
+     * lịch sử giám sát, phần cứng, cảnh báo, lệnh từ xa, phiên chia sẻ
+     * màn hình, Credential và yêu cầu đăng ký.
+     *
+     * Áp dụng cho Agent ở mọi trạng thái. Hành động này KHÔNG thể hoàn tác.
+     *
+     * Agent vẫn đang chạy trên máy Client sẽ bị Server từ chối (HTTP 401)
+     * ở lần gọi kế tiếp, tự xóa Credential cục bộ rồi đăng ký lại như một
+     * Agent mới (xem AgentRuntime phía Agent).
+     */
     @Transactional
     public void deleteAgent(String agentId) {
 
@@ -279,8 +297,9 @@ public class ClientAgentService {
 
         final String normalizedAgentId = agentId.trim();
 
+        // Khóa Agent để không chạy song song với approve / revoke
         ClientAgent agent = clientAgentRepository
-                .findById(normalizedAgentId)
+                .findByAgentIdForUpdate(normalizedAgentId)
                 .orElseThrow(() ->
                         new IllegalArgumentException(
                                 "Không tìm thấy Agent: "
@@ -288,15 +307,41 @@ public class ClientAgentService {
                         )
                 );
 
-        LocalDateTime now = LocalDateTime.now();
-
         Client client = agent.getClient();
 
-        client.setStatus(ClientStatus.OFFLINE);
-        client.setUpdatedAt(now);
+        if (client == null) {
+            throw new IllegalStateException(
+                    "Agent " + normalizedAgentId
+                            + " không có Client liên kết."
+            );
+        }
 
-        clientRepository.save(client);
+        clientDataPurgeService.purge(
+                normalizedAgentId,
+                client.getClientId()
+        );
+    }
 
-        clientAgentRepository.delete(agent);
+    // ==========================================
+    // DANH SÁCH AGENT CÓ PHÂN TRANG
+    // ==========================================
+    @Transactional(readOnly = true)
+    public PageResponse<ClientAgent> getAgentsPage(
+            int page,
+            int size,
+            AgentStatus status) {
+
+        Pageable pageable = PageResponse.pageable(
+                page, size,
+                Sort.by(Sort.Direction.DESC, "registeredAt")
+                        .and(Sort.by(Sort.Direction.ASC, "agentId"))
+        );
+
+        return PageResponse.of(
+                status == null
+                        ? clientAgentRepository.findAll(pageable)
+                        : clientAgentRepository.findByStatus(status, pageable),
+                a -> a
+        );
     }
 }

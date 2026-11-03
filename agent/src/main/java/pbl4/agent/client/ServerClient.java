@@ -24,6 +24,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ServerClient {
 
@@ -39,9 +41,35 @@ public class ServerClient {
     private static final Duration MONITORING_TIMEOUT =
             Duration.ofSeconds(15);
 
+    // Số lần liên tiếp Server trả 401 thì coi Credential đã bị từ chối.
+    // Dùng ngưỡng > 1 để một phản hồi lỗi thoáng qua không làm Agent
+    // xóa Credential và đăng ký lại.
+    private static final int REJECTION_THRESHOLD = 3;
+
+    /**
+     * Được gọi (đúng một lần) khi Server liên tục từ chối Credential
+     * của Agent (HTTP 401): Credential bị thu hồi, vô hiệu hóa, hết hạn
+     * hoặc Agent không còn tồn tại trên Server.
+     *
+     * Hàm được gọi trên luồng đang gửi request nên KHÔNG được chặn
+     * lâu bên trong; hãy chuyển việc xử lý sang luồng khác.
+     */
+    @FunctionalInterface
+    public interface CredentialRejectedListener {
+        void onCredentialRejected();
+    }
+
     private final AgentConfig config;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+
+    private final AtomicInteger consecutiveRejections =
+            new AtomicInteger(0);
+
+    private final AtomicBoolean rejectionReported =
+            new AtomicBoolean(false);
+
+    private volatile CredentialRejectedListener credentialRejectedListener;
 
     public ServerClient(AgentConfig config) {
 
@@ -121,6 +149,70 @@ public class ServerClient {
     }
 
     // ==========================================
+    // THEO DÕI VIỆC SERVER TỪ CHỐI CREDENTIAL
+    // ==========================================
+
+    public void setCredentialRejectedListener(
+            CredentialRejectedListener listener) {
+
+        this.credentialRejectedListener = listener;
+    }
+
+    /**
+     * Ghi nhận mã trạng thái của mọi request có gắn Credential.
+     *
+     *  - 401        : Server từ chối Credential -> tăng bộ đếm
+     *  - dưới 500   : Server đã xử lý và không từ chối -> đặt lại bộ đếm
+     *  - 5xx        : lỗi phía Server, không kết luận gì -> giữ nguyên
+     *
+     * Lỗi mạng (Server tắt, mất kết nối) không đi qua hàm này nên
+     * không bao giờ bị tính là Credential bị từ chối.
+     */
+    private void trackAuthStatus(int statusCode) {
+
+        if (statusCode == 401) {
+
+            int count = consecutiveRejections.incrementAndGet();
+
+            System.err.println(
+                    "[AGENT] Server từ chối Credential (HTTP 401), "
+                            + "lần " + count + "/" + REJECTION_THRESHOLD
+                            + "."
+            );
+
+            if (count >= REJECTION_THRESHOLD
+                    && rejectionReported.compareAndSet(false, true)) {
+
+                notifyCredentialRejected();
+            }
+
+        } else if (statusCode < 500) {
+
+            consecutiveRejections.set(0);
+        }
+    }
+
+    private void notifyCredentialRejected() {
+
+        CredentialRejectedListener listener =
+                credentialRejectedListener;
+
+        if (listener == null) {
+            return;
+        }
+
+        try {
+            listener.onCredentialRejected();
+
+        } catch (Exception e) {
+            System.err.println(
+                    "[AGENT] Lỗi khi xử lý Credential bị từ chối: "
+                            + safeMessage(e)
+            );
+        }
+    }
+
+    // ==========================================
     // CREATE COMMON REQUEST BUILDER
     // ==========================================
 
@@ -166,6 +258,8 @@ public class ServerClient {
                             StandardCharsets.UTF_8
                     )
             );
+
+            trackAuthStatus(response.statusCode());
 
             if (!isSuccessful(response.statusCode())) {
                 System.err.println(
@@ -253,6 +347,8 @@ public class ServerClient {
                     )
             );
 
+            trackAuthStatus(response.statusCode());
+
             if (!isSuccessful(response.statusCode())) {
                 System.err.println(
                         "[AGENT] Gửi Monitoring Data thất bại. HTTP "
@@ -329,6 +425,8 @@ public class ServerClient {
                             StandardCharsets.UTF_8
                     )
             );
+
+            trackAuthStatus(response.statusCode());
 
             if (!isSuccessful(response.statusCode())) {
                 throw new IOException(
@@ -525,6 +623,8 @@ public class ServerClient {
                             StandardCharsets.UTF_8
                     )
             );
+
+            trackAuthStatus(response.statusCode());
 
             if (!isSuccessful(response.statusCode())) {
                 System.err.println(

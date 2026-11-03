@@ -1,5 +1,6 @@
 package com.pbl4.server.service;
 
+import com.pbl4.server.dto.response.CurrentUserResponse;
 import com.pbl4.server.dto.response.LoginResponse;
 import com.pbl4.server.enums.AccountStatus;
 import com.pbl4.server.model.Account;
@@ -11,6 +12,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Locale;
 
 @Service
 public class AuthService {
@@ -50,9 +53,14 @@ public class AuthService {
             );
         }
 
-        // 2. Tìm tài khoản
+        // 2. Tìm tài khoản theo username, nếu không có thì thử theo email.
+        //    Email lưu dạng chữ thường nên chuẩn hóa trước khi tìm.
+        String identifier = username.trim();
+
         Account account = accountRepository
-                .findByUsername(username.trim())
+                .findByUsername(identifier)
+                .or(() -> accountRepository.findByEmail(
+                        identifier.toLowerCase(Locale.ROOT)))
                 .orElseThrow(() ->
                         new RuntimeException(
                                 "Username hoặc mật khẩu không đúng"
@@ -106,11 +114,70 @@ public class AuthService {
         // 8. Tạo JWT
         String token = jwtUtil.generateToken(account);
 
-        // 9. Trả thông tin đăng nhập
+        // 9. Trả thông tin đăng nhập (kèm danh sách quyền)
         return new LoginResponse(
                 token,
                 account.getUsername(),
-                account.getRole().getRoleName().name()
+                account.getRole().getRoleName().name(),
+                extractPermissions(account)
         );
+    }
+
+    /**
+     * Lấy thông tin người dùng hiện tại (role + permissions mới nhất).
+     * Frontend gọi khi tải lại trang để đồng bộ quyền,
+     * phòng trường hợp quyền của vai trò đã bị thay đổi.
+     */
+    @Transactional(readOnly = true)
+    public CurrentUserResponse getCurrentUser(String username) {
+
+        if (username == null || username.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Username không được để trống"
+            );
+        }
+
+        Account account = accountRepository
+                .findByUsernameWithRoleAndPermissions(username.trim())
+                .orElseThrow(() ->
+                        new RuntimeException(
+                                "Tài khoản không tồn tại"
+                        )
+                );
+
+        if (account.getRole() == null
+                || account.getRole().getRoleName() == null) {
+
+            throw new IllegalStateException(
+                    "Tài khoản chưa được gán vai trò"
+            );
+        }
+
+        return new CurrentUserResponse(
+                account.getUsername(),
+                account.getEmail(),
+                account.getRole().getRoleName().name(),
+                extractPermissions(account)
+        );
+    }
+
+    /**
+     * Lấy danh sách mã quyền (đã sắp xếp) của vai trò trong tài khoản.
+     */
+    private List<String> extractPermissions(Account account) {
+
+        if (account.getRole() == null
+                || account.getRole().getPermissions() == null) {
+
+            return List.of();
+        }
+
+        return account.getRole().getPermissions().stream()
+                .filter(permission -> permission != null
+                        && permission.getPermissionCode() != null)
+                .map(permission ->
+                        permission.getPermissionCode().name())
+                .sorted()
+                .toList();
     }
 }

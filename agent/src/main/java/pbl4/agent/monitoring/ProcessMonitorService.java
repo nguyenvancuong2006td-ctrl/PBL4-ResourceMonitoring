@@ -12,10 +12,19 @@ import pbl4.agent.model.ProcessData;
 
 public class ProcessMonitorService {
 
+    // Số tiến trình gửi lên Server mỗi lần thu thập (xếp theo CPU giảm dần).
+    // Cấu hình bằng biến môi trường AGENT_PROCESS_LIMIT hoặc
+    // -Dagent.process.limit=100
+    private static final int DEFAULT_PROCESS_LIMIT = 50;
+    private static final int MAX_PROCESS_LIMIT = 500;
+
     private final OperatingSystem operatingSystem;
     private final CentralProcessor processor;
+    private final int processLimit;
 
     public ProcessMonitorService() {
+
+        processLimit = readProcessLimit();
 
         SystemInfo systemInfo =
                 new SystemInfo();
@@ -37,7 +46,7 @@ public class ProcessMonitorService {
                 operatingSystem.getProcesses(
                         null,
                         OperatingSystem.ProcessSorting.CPU_DESC,
-                        10
+                        processLimit
                 );
 
         int logicalProcessorCount =
@@ -67,5 +76,31 @@ public class ProcessMonitorService {
         }
 
         return processDataList;
+    }
+
+    private static int readProcessLimit() {
+
+        String raw = System.getenv("AGENT_PROCESS_LIMIT");
+
+        if (raw == null || raw.isBlank()) {
+            raw = System.getProperty("agent.process.limit");
+        }
+
+        if (raw == null || raw.isBlank()) {
+            return DEFAULT_PROCESS_LIMIT;
+        }
+
+        try {
+            int value = Integer.parseInt(raw.trim());
+
+            if (value < 1) {
+                return DEFAULT_PROCESS_LIMIT;
+            }
+
+            return Math.min(value, MAX_PROCESS_LIMIT);
+
+        } catch (NumberFormatException e) {
+            return DEFAULT_PROCESS_LIMIT;
+        }
     }
 }

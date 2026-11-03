@@ -53,7 +53,22 @@ public class RemoteCommand {
     @Column(name = "completed_at")
     private LocalDateTime completedAt;
 
+    /*
+     * Thời điểm tạo lệnh. Dùng để xác định lệnh PENDING đã chờ quá lâu
+     * mà Agent chưa nhận (xem RemoteCommandService.expireStaleCommands).
+     */
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt;
+
     public RemoteCommand() {
+    }
+
+    @PrePersist
+    protected void onCreate() {
+
+        if (createdAt == null) {
+            createdAt = LocalDateTime.now();
+        }
     }
 
     public Long getCommandId() {
@@ -142,5 +157,13 @@ public class RemoteCommand {
 
     public void setStartedAt(LocalDateTime startedAt) {
         this.startedAt = startedAt;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(LocalDateTime createdAt) {
+        this.createdAt = createdAt;
     }
 }

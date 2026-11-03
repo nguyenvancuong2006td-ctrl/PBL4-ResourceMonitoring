@@ -1,7 +1,10 @@
 package com.pbl4.server.controller;
 
 import com.pbl4.server.dto.request.StartScreenSharingRequest;
+import com.pbl4.server.dto.response.PageResponse;
+import com.pbl4.server.dto.response.ScreenSharingHistoryResponse;
 import com.pbl4.server.dto.response.ScreenSharingSessionResponse;
+import com.pbl4.server.enums.ScreenSharingStatus;
 import com.pbl4.server.model.Account;
 import com.pbl4.server.repository.AccountRepository;
 import com.pbl4.server.service.ScreenSharingSessionService;
@@ -132,6 +135,26 @@ public class ScreenSharingSessionController {
                     Map.of("message", "Không thể lấy phiên chia sẻ hiện tại.")
             );
         }
+    }
+
+    /**
+     * Lịch sử các phiên chia sẻ màn hình (mới nhất trước).
+     *
+     * GET /api/screen-sharing/sessions/history
+     *     ?page=0&size=20&clientId=...&status=ENDED
+     */
+    @GetMapping("/history")
+    @PreAuthorize("hasAnyAuthority('REMOTE_COMMAND','HISTORY_VIEW')")
+    public ResponseEntity<PageResponse<ScreenSharingHistoryResponse>>
+    getHistory(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String clientId,
+            @RequestParam(required = false) ScreenSharingStatus status) {
+
+        return ResponseEntity.ok(
+                sessionService.getHistory(page, size, clientId, status)
+        );
     }
 
     /**

@@ -15,10 +15,14 @@ import com.pbl4.server.model.AgentCredential;
 import com.pbl4.server.model.AgentRegistrationRequest;
 import com.pbl4.server.model.Client;
 import com.pbl4.server.model.ClientAgent;
+import com.pbl4.server.model.CpuInfo;
+import com.pbl4.server.model.MemoryInfo;
 
 import com.pbl4.server.repository.AgentRegistrationRequestRepository;
 import com.pbl4.server.repository.ClientAgentRepository;
 import com.pbl4.server.repository.ClientRepository;
+import com.pbl4.server.repository.CpuInfoRepository;
+import com.pbl4.server.repository.MemoryInfoRepository;
 
 import com.pbl4.server.util.RegistrationTokenUtil;
 
@@ -39,6 +43,8 @@ public class AgentRegistrationService {
     private final AgentCredentialService agentCredentialService;
     private final CredentialEncryptionService credentialEncryptionService;
     private final ClientAgentIdGenerator clientAgentIdGenerator;
+    private final CpuInfoRepository cpuInfoRepository;
+    private final MemoryInfoRepository memoryInfoRepository;
 
     public AgentRegistrationService(
             AgentRegistrationRequestRepository registrationRequestRepository,
@@ -46,7 +52,9 @@ public class AgentRegistrationService {
             ClientRepository clientRepository,
             AgentCredentialService agentCredentialService,
             CredentialEncryptionService credentialEncryptionService,
-            ClientAgentIdGenerator clientAgentIdGenerator) {
+            ClientAgentIdGenerator clientAgentIdGenerator,
+            CpuInfoRepository cpuInfoRepository,
+            MemoryInfoRepository memoryInfoRepository) {
 
         this.registrationRequestRepository = registrationRequestRepository;
         this.clientAgentRepository = clientAgentRepository;
@@ -54,6 +62,8 @@ public class AgentRegistrationService {
         this.agentCredentialService = agentCredentialService;
         this.credentialEncryptionService = credentialEncryptionService;
         this.clientAgentIdGenerator = clientAgentIdGenerator;
+        this.cpuInfoRepository = cpuInfoRepository;
+        this.memoryInfoRepository = memoryInfoRepository;
     }
 
     // ==================================================
@@ -99,6 +109,9 @@ public class AgentRegistrationService {
         client.setStatus(ClientStatus.PENDING_APPROVAL);
 
         clientRepository.save(client);
+
+        // 1b. Lưu phần cứng tĩnh (CPU, RAM) nếu Agent có gửi
+        saveHardwareInfo(client, request);
 
         // 2. Tạo Client Agent
         ClientAgent agent = new ClientAgent();
@@ -588,6 +601,86 @@ public class AgentRegistrationService {
     }
 
     // ==================================================
+    // 5b. THU HỒI AGENT
+    // ==================================================
+
+    /**
+     * Thu hồi Agent đã được phê duyệt (ONLINE hoặc OFFLINE).
+     *
+     * - Credential chuyển REVOKED, không thể kích hoạt lại.
+     * - Agent chuyển DISABLED, Client chuyển OFFLINE.
+     * - Xóa bản Credential mã hóa chưa giao cho Agent (nếu còn).
+     *
+     * Ở lần gọi Server kế tiếp, Agent bị từ chối (HTTP 401),
+     * tự xóa dữ liệu cục bộ và đăng ký lại như một Agent mới.
+     */
+    public void revokeAgent(String agentId) {
+
+        String normalizedAgentId = validateAgentId(agentId);
+
+        // 1. Khóa Agent
+        ClientAgent agent = clientAgentRepository
+                .findByAgentIdForUpdate(normalizedAgentId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Không tìm thấy Agent: " + normalizedAgentId
+                ));
+
+        // 2. Kiểm tra trạng thái Agent
+        if (agent.getStatus() == AgentStatus.DISABLED) {
+            throw new IllegalStateException(
+                    "Agent đã được thu hồi trước đó."
+            );
+        }
+
+        if (agent.getStatus() != AgentStatus.ONLINE
+                && agent.getStatus() != AgentStatus.OFFLINE) {
+
+            throw new IllegalStateException(
+                    "Chỉ có thể thu hồi Agent đã được phê duyệt."
+            );
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+
+        // 3. Thu hồi Credential
+        AgentCredential credential =
+                agentCredentialService.getCredentialByAgentId(
+                        normalizedAgentId
+                );
+
+        if (credential.getStatus() != CredentialStatus.REVOKED) {
+            agentCredentialService.revokeCredential(
+                    credential.getCredentialId()
+            );
+        }
+
+        // 4. Cập nhật Agent
+        if (agent.getStatus() == AgentStatus.ONLINE) {
+            agent.setDisconnectedAt(now);
+        }
+
+        agent.setStatus(AgentStatus.DISABLED);
+        clientAgentRepository.save(agent);
+
+        // 5. Cập nhật Client
+        Client client = agent.getClient();
+
+        if (client != null) {
+            client.setStatus(ClientStatus.OFFLINE);
+            client.setUpdatedAt(now);
+            clientRepository.save(client);
+        }
+
+        // 6. Xóa Credential mã hóa chưa giao (nếu có)
+        registrationRequestRepository
+                .findByAgentAgentIdForUpdate(normalizedAgentId)
+                .ifPresent(registration -> {
+                    registration.setCredentialCiphertext(null);
+                    registrationRequestRepository.save(registration);
+                });
+    }
+
+    // ==================================================
     // 6. KIỂM TRA DỮ LIỆU ĐĂNG KÝ
     // ==================================================
 
@@ -635,6 +728,72 @@ public class AgentRegistrationService {
     // ==================================================
     // 7. HÀM HỖ TRỢ
     // ==================================================
+
+    /**
+     * Ghi cpu_info và memory_info của Client vừa tạo.
+     *
+     * Thông tin phần cứng chỉ mang tính hiển thị nên KHÔNG làm thất bại
+     * đăng ký: chuỗi quá dài thì cắt, số không hợp lệ (<= 0) thì bỏ qua.
+     */
+    private void saveHardwareInfo(
+            Client client,
+            com.pbl4.server.dto.request.AgentRegistrationRequest request) {
+
+        String model = cleanText(request.getCpuModel(), 100);
+        String manufacturer = cleanText(request.getCpuManufacturer(), 50);
+        Integer cores = positiveOrNull(request.getCpuCoreCount());
+        Integer threads = positiveOrNull(request.getCpuThreadCount());
+        Double frequency = positiveOrNull(request.getCpuFrequencyMhz());
+
+        if (model != null || manufacturer != null || cores != null
+                || threads != null || frequency != null) {
+
+            CpuInfo cpu = new CpuInfo();
+
+            cpu.setClient(client);
+            cpu.setModelName(model);
+            cpu.setManufacturer(manufacturer);
+            cpu.setCoreCount(cores);
+            cpu.setThreadCount(threads);
+            cpu.setFrequencyMhz(frequency);
+
+            cpuInfoRepository.save(cpu);
+        }
+
+        Long totalBytes = request.getMemoryTotalBytes();
+
+        if (totalBytes != null && totalBytes > 0) {
+
+            MemoryInfo memory = new MemoryInfo();
+
+            memory.setClient(client);
+            memory.setTotalBytes(totalBytes);
+
+            memoryInfoRepository.save(memory);
+        }
+    }
+
+    private String cleanText(String value, int maxLength) {
+
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+
+        String trimmed = value.trim();
+
+        return trimmed.length() > maxLength
+                ? trimmed.substring(0, maxLength)
+                : trimmed;
+    }
+
+    private Integer positiveOrNull(Integer value) {
+        return value != null && value > 0 ? value : null;
+    }
+
+    private Double positiveOrNull(Double value) {
+        return value != null && value > 0 && !value.isNaN()
+                && !value.isInfinite() ? value : null;
+    }
 
     private String validateAgentId(String agentId) {
 

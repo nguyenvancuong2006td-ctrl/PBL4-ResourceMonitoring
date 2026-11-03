@@ -4,6 +4,7 @@ import com.pbl4.server.enums.AgentStatus;
 import com.pbl4.server.model.ClientAgent;
 import com.pbl4.server.repository.ClientAgentRepository;
 import com.pbl4.server.service.ClientAgentService;
+import com.pbl4.server.service.SystemConfigService;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,32 +20,35 @@ public class OfflineDetectionScheduler {
     private static final Logger logger =
             LoggerFactory.getLogger(OfflineDetectionScheduler.class);
 
-    // Thời gian tối đa Agent được phép không gửi Heartbeat
-    private static final long HEARTBEAT_TIMEOUT_SECONDS = 15;
-
     private final ClientAgentRepository clientAgentRepository;
     private final ClientAgentService clientAgentService;
+    private final SystemConfigService systemConfigService;
 
     public OfflineDetectionScheduler(
             ClientAgentRepository clientAgentRepository,
-            ClientAgentService clientAgentService) {
+            ClientAgentService clientAgentService,
+            SystemConfigService systemConfigService) {
 
         this.clientAgentRepository = clientAgentRepository;
         this.clientAgentService = clientAgentService;
+        this.systemConfigService = systemConfigService;
     }
 
     /**
      * Kiểm tra trạng thái các Agent định kỳ.
-     * Nếu Agent không gửi Heartbeat quá thời gian quy định,
-     * chuyển Agent và Client tương ứng sang OFFLINE.
+     * Nếu Agent không gửi Heartbeat quá Heartbeat Timeout trong cấu hình
+     * hệ thống, chuyển Agent và Client tương ứng sang OFFLINE.
      */
     @Scheduled(fixedRate = 5000)
     public void checkOfflineAgents() {
 
-        LocalDateTime timeout = LocalDateTime.now()
-                .minusSeconds(HEARTBEAT_TIMEOUT_SECONDS);
-
         try {
+            // Đọc cấu hình ở mỗi lần quét để thay đổi có hiệu lực ngay
+            LocalDateTime timeout = LocalDateTime.now()
+                    .minusSeconds(
+                            systemConfigService.getHeartbeatTimeoutSeconds()
+                    );
+
             // Lấy danh sách Agent đang ONLINE
             List<ClientAgent> onlineAgents =
                     clientAgentRepository.findByStatus(AgentStatus.ONLINE);

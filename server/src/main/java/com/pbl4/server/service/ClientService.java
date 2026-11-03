@@ -2,10 +2,12 @@
 package com.pbl4.server.service;
 
 import com.pbl4.server.enums.ClientStatus;
+import com.pbl4.server.dto.response.PageResponse;
 import com.pbl4.server.model.Client;
 import com.pbl4.server.repository.ClientAgentRepository;
 import com.pbl4.server.repository.ClientRepository;
 
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -97,6 +99,26 @@ public class ClientService {
     // LẤY CLIENT THEO ID
     // ==========================================
     @Transactional(readOnly = true)
+    public PageResponse<Client> getClientsPage(
+            int page,
+            int size,
+            ClientStatus status,
+            String query) {
+
+        String q = query == null ? "" : query.trim();
+
+        return PageResponse.of(
+                clientRepository.search(
+                        status,
+                        q,
+                        PageResponse.pageable(
+                                page, size,
+                                Sort.by(Sort.Direction.ASC, "clientId"))
+                ),
+                c -> c
+        );
+    }
+
     public Client getClientById(String clientId) {
 
         if (clientId == null || clientId.isBlank()) {

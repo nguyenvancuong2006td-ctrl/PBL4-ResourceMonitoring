@@ -1,4 +1,3 @@
-
 package com.pbl4.server.dto.response;
 
 import com.pbl4.server.enums.AlertSeverity;
@@ -23,6 +22,7 @@ public class AlertResponse {
     private LocalDateTime createdAt;
     private LocalDateTime acknowledgedAt;
     private LocalDateTime resolvedAt;
+    private String handledBy;
 
     public AlertResponse(Alert alert) {
         this.alertId = alert.getAlertId();
@@ -45,6 +45,10 @@ public class AlertResponse {
         this.createdAt = alert.getCreatedAt();
         this.acknowledgedAt = alert.getAcknowledgedAt();
         this.resolvedAt = alert.getResolvedAt();
+
+        if (alert.getAccount() != null) {
+            this.handledBy = alert.getAccount().getUsername();
+        }
     }
 
     public Long getAlertId() {
@@ -97,5 +101,10 @@ public class AlertResponse {
 
     public LocalDateTime getResolvedAt() {
         return resolvedAt;
+    }
+
+    // Người dùng đã xác nhận / đóng cảnh báo (null nếu hệ thống tự xử lý)
+    public String getHandledBy() {
+        return handledBy;
     }
 }

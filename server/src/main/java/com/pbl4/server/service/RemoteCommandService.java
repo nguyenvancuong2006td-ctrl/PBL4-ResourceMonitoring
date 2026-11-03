@@ -7,6 +7,7 @@ import com.pbl4.server.enums.CommandStatus;
 import com.pbl4.server.enums.CommandType;
 import com.pbl4.server.enums.ScreenSharingStatus;
 
+import com.pbl4.server.dto.response.PageResponse;
 import com.pbl4.server.model.Account;
 import com.pbl4.server.model.Client;
 import com.pbl4.server.model.ClientAgent;
@@ -19,11 +20,14 @@ import com.pbl4.server.repository.ClientRepository;
 import com.pbl4.server.repository.RemoteCommandRepository;
 import com.pbl4.server.repository.ScreenSharingSessionRepository;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 @Service
@@ -37,6 +41,17 @@ public class RemoteCommandService {
 
     private final ScreenSharingSessionRepository screenSharingSessionRepository;
     private final ObjectMapper objectMapper;
+
+    // Lệnh PENDING quá thời gian này mà Agent chưa nhận thì bị TIMEOUT.
+    // Agent poll mỗi 5 giây nên 60 giây là đủ rộng; Agent offline thì lệnh
+    // không được giữ lại để thực thi muộn (ví dụ SHUTDOWN/RESTART cũ).
+    private static final long PENDING_TIMEOUT_SECONDS = 60;
+
+    // Lệnh SENT quá thời gian này mà Agent chưa báo RUNNING thì bị TIMEOUT.
+    private static final long SENT_TIMEOUT_SECONDS = 60;
+
+    // Lệnh RUNNING quá thời gian này mà Agent chưa báo kết quả thì bị TIMEOUT.
+    private static final long RUNNING_TIMEOUT_SECONDS = 300;
 
     public RemoteCommandService(
             RemoteCommandRepository remoteCommandRepository,
@@ -121,6 +136,33 @@ public class RemoteCommandService {
 
         return remoteCommandRepository
                 .findByClientClientId(clientId);
+    }
+
+    /**
+     * Danh sách lệnh của TOÀN hệ thống (mới nhất trước, có phân trang).
+     */
+    @Transactional(readOnly = true)
+    public Page<RemoteCommand> searchCommands(
+            int page,
+            int size,
+            String clientId,
+            CommandStatus status,
+            CommandType commandType) {
+
+        String client = (clientId == null || clientId.isBlank())
+                ? null
+                : clientId.trim();
+
+        return remoteCommandRepository.search(
+                client,
+                status,
+                commandType,
+                PageResponse.pageable(
+                        page,
+                        size,
+                        Sort.by(Sort.Direction.DESC, "commandId")
+                )
+        );
     }
 
     /**
@@ -297,13 +339,161 @@ public class RemoteCommandService {
         }
 
         LocalDateTime now = LocalDateTime.now();
+        LocalDateTime pendingCutoff =
+                now.minusSeconds(PENDING_TIMEOUT_SECONDS);
+
+        List<RemoteCommand> deliverable = new ArrayList<>();
 
         for (RemoteCommand command : commands) {
+
+            // Lệnh đã chờ quá lâu (Agent vừa online lại sau thời gian dài):
+            // không giao nữa, đánh dấu TIMEOUT.
+            if (command.getCreatedAt() == null
+                    || command.getCreatedAt().isBefore(pendingCutoff)) {
+
+                markAsTimedOut(
+                        command,
+                        now,
+                        "Lệnh đã quá hạn chờ Agent nhận ("
+                                + PENDING_TIMEOUT_SECONDS + " giây)."
+                );
+
+                continue;
+            }
+
             command.setStatus(CommandStatus.SENT);
             command.setSentAt(now);
+
+            deliverable.add(command);
         }
 
-        return remoteCommandRepository.saveAll(commands);
+        // Lưu cả lệnh được giao (SENT) lẫn lệnh quá hạn (TIMEOUT)
+        remoteCommandRepository.saveAll(commands);
+
+        return deliverable;
+    }
+
+    /**
+     * Đánh dấu TIMEOUT cho các lệnh bị treo.
+     *
+     * Được gọi định kỳ bởi CommandTimeoutScheduler.
+     *
+     *  - PENDING: Agent không nhận lệnh (thường do Agent offline).
+     *  - SENT   : Agent đã lấy lệnh nhưng không báo RUNNING.
+     *  - RUNNING: Agent không báo kết quả.
+     *
+     * @return số lệnh đã chuyển sang TIMEOUT
+     */
+    @Transactional
+    public int expireStaleCommands() {
+
+        LocalDateTime now = LocalDateTime.now();
+        int expired = 0;
+
+        for (RemoteCommand command
+                : remoteCommandRepository.findStalePendingForUpdate(
+                        now.minusSeconds(PENDING_TIMEOUT_SECONDS))) {
+
+            markAsTimedOut(
+                    command,
+                    now,
+                    "Agent không nhận lệnh trong "
+                            + PENDING_TIMEOUT_SECONDS
+                            + " giây (Agent có thể đang offline)."
+            );
+
+            remoteCommandRepository.save(command);
+            expired++;
+        }
+
+        for (RemoteCommand command
+                : remoteCommandRepository.findStaleSentForUpdate(
+                        now.minusSeconds(SENT_TIMEOUT_SECONDS))) {
+
+            markAsTimedOut(
+                    command,
+                    now,
+                    "Agent đã nhận lệnh nhưng không bắt đầu thực thi trong "
+                            + SENT_TIMEOUT_SECONDS + " giây."
+            );
+
+            remoteCommandRepository.save(command);
+            expired++;
+        }
+
+        for (RemoteCommand command
+                : remoteCommandRepository.findStaleRunningForUpdate(
+                        now.minusSeconds(RUNNING_TIMEOUT_SECONDS))) {
+
+            markAsTimedOut(
+                    command,
+                    now,
+                    "Agent không báo kết quả thực thi trong "
+                            + RUNNING_TIMEOUT_SECONDS + " giây."
+            );
+
+            remoteCommandRepository.save(command);
+            expired++;
+        }
+
+        return expired;
+    }
+
+    /**
+     * Chuyển lệnh sang TIMEOUT (chưa lưu, người gọi tự lưu) và đồng bộ
+     * phiên chia sẻ màn hình nếu đó là lệnh bắt đầu chia sẻ.
+     */
+    private void markAsTimedOut(
+            RemoteCommand command,
+            LocalDateTime now,
+            String message) {
+
+        command.setStatus(CommandStatus.TIMEOUT);
+        command.setResult(null);
+        command.setErrorMessage(message);
+        command.setCompletedAt(now);
+
+        failSessionOnStartTimeout(command, now);
+    }
+
+    /**
+     * Lệnh START_SCREEN_SHARING hết hạn thì phiên tương ứng không thể bắt đầu:
+     * chuyển phiên đang REQUESTED/STARTING sang FAILED ngay thay vì chờ
+     * ScreenSharingSessionScheduler.
+     *
+     * Lệnh STOP_SCREEN_SHARING không xử lý ở đây: phiên STOPPING tự kết thúc
+     * sau STOP_TIMEOUT_SECONDS bởi ScreenSharingSessionScheduler.
+     */
+    private void failSessionOnStartTimeout(
+            RemoteCommand command,
+            LocalDateTime now) {
+
+        if (command.getCommandType()
+                != CommandType.START_SCREEN_SHARING) {
+            return;
+        }
+
+        try {
+            ScreenSharingSession session = getSessionFromCommand(command);
+
+            if (session.getStatus() == ScreenSharingStatus.REQUESTED
+                    || session.getStatus()
+                            == ScreenSharingStatus.STARTING) {
+
+                session.setStatus(ScreenSharingStatus.FAILED);
+                session.setEndedAt(now);
+                session.setEndReason("START_TIMEOUT");
+                session.setErrorMessage(
+                        "Agent không thực thi lệnh bắt đầu chia sẻ "
+                        + "màn hình trong thời gian cho phép.");
+
+                screenSharingSessionRepository.save(session);
+            }
+
+        } catch (RuntimeException e) {
+            // Lệnh tạo thủ công không có sessionCode hợp lệ, hoặc phiên
+            // đã bị xóa: không có phiên để đồng bộ.
+        }
     }
 
     /**
@@ -493,30 +683,50 @@ public class RemoteCommandService {
 
             } else {
 
-                session.setStatus(ScreenSharingStatus.FAILED);
-                session.setEndedAt(now);
-                session.setErrorMessage(errorMessage);
+                // Chỉ đánh dấu FAILED khi phiên còn đang khởi động
+                // (không ghi đè STOPPING, ACTIVE, ENDED hoặc FAILED).
+                if (session.getStatus() == ScreenSharingStatus.REQUESTED
+                        || session.getStatus()
+                                == ScreenSharingStatus.STARTING) {
+
+                    session.setStatus(ScreenSharingStatus.FAILED);
+                    session.setEndedAt(now);
+                    session.setErrorMessage(errorMessage);
+                }
             }
 
         } else if (commandType == CommandType.STOP_SCREEN_SHARING) {
 
             if (success) {
 
-                session.setStatus(ScreenSharingStatus.ENDED);
-                session.setEndedAt(now);
-                session.setEndReason("ADMIN_STOPPED");
-                session.setErrorMessage(null);
+                // Phiên đã kết thúc trước đó (Agent ngắt kết nối, hết hạn
+                // bởi scheduler...): giữ nguyên lý do kết thúc ban đầu.
+                if (session.getStatus() != ScreenSharingStatus.ENDED
+                        && session.getStatus()
+                                != ScreenSharingStatus.FAILED) {
+
+                    session.setStatus(ScreenSharingStatus.ENDED);
+                    session.setEndedAt(now);
+                    session.setEndReason("ADMIN_STOPPED");
+                    session.setErrorMessage(null);
+                }
 
             } else {
 
-                // Dừng thất bại: giữ phiên ACTIVE để Admin có thể thử lại.
-                session.setStatus(ScreenSharingStatus.ACTIVE);
+                // Dừng thất bại: đưa phiên đang STOPPING về ACTIVE để Admin
+                // có thể thử lại. Phiên đã ENDED/FAILED không được hồi sinh,
+                // nếu không sẽ chặn Admin tạo phiên mới.
+                if (session.getStatus()
+                        == ScreenSharingStatus.STOPPING) {
 
-                session.setErrorMessage(
-                        errorMessage == null || errorMessage.isBlank()
-                                ? "Agent không thể dừng chia sẻ màn hình."
-                                : errorMessage
-                );
+                    session.setStatus(ScreenSharingStatus.ACTIVE);
+
+                    session.setErrorMessage(
+                            errorMessage == null || errorMessage.isBlank()
+                                    ? "Agent không thể dừng chia sẻ màn hình."
+                                    : errorMessage
+                    );
+                }
             }
         }
 
@@ -538,12 +748,17 @@ public class RemoteCommandService {
         }
 
         ClientAgent agent = clientAgentRepository.findById(agentId)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Không tìm thấy Agent: " + agentId));
+                .orElse(null);
 
-        if (!agentCredentialService.validateCredential(
-                agentId,
-                rawCredential)) {
+        // Agent không tồn tại (ví dụ đã bị Admin xóa) được xử lý giống
+        // Credential sai: Controller trả HTTP 401. Điều này BẮT BUỘC để
+        // Agent nhận ra mình đã bị loại bỏ và tự đăng ký lại - Agent chỉ
+        // coi là bị từ chối khi nhận 401 liên tiếp, một mã 400/404 xen
+        // giữa sẽ đặt lại bộ đếm và Agent không bao giờ phục hồi.
+        if (agent == null
+                || !agentCredentialService.validateCredential(
+                        agentId,
+                        rawCredential)) {
             throw new SecurityException(
                     "Credential không hợp lệ hoặc đã hết hiệu lực.");
         }

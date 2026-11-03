@@ -1,3 +1,4 @@
+
 package com.pbl4.server.controller;
 
 import com.pbl4.server.dto.request.AgentRegistrationRequest;
@@ -12,7 +13,10 @@ import com.pbl4.server.service.AgentRegistrationService;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/agent-registration")
@@ -29,11 +33,6 @@ public class AgentRegistrationController {
     // 1. ĐĂNG KÝ AGENT
     // ==================================================
 
-    /**
-     * Agent gửi thông tin đăng ký lên Server.
-     *
-     * POST /api/agent-registration
-     */
     @PostMapping
     public ResponseEntity<AgentRegistrationResponse> registerAgent(
             @RequestBody AgentRegistrationRequest request) {
@@ -50,13 +49,6 @@ public class AgentRegistrationController {
     // 2. POLL CREDENTIAL
     // ==================================================
 
-    /**
-     * Agent kiểm tra Credential đã được Admin phê duyệt hay chưa.
-     *
-     * POST /api/agent-registration/{agentId}/credential/poll
-     *
-     * Registration Token được gửi trong Request Body.
-     */
     @PostMapping("/{agentId}/credential/poll")
     public ResponseEntity<AgentCredentialPollResponse> pollCredential(
             @PathVariable String agentId,
@@ -75,13 +67,6 @@ public class AgentRegistrationController {
     // 3. ACK CREDENTIAL
     // ==================================================
 
-    /**
-     * Agent xác nhận đã nhận và lưu Credential thành công.
-     *
-     * POST /api/agent-registration/{agentId}/credential/ack
-     *
-     * Registration Token được gửi trong Request Body.
-     */
     @PostMapping("/{agentId}/credential/ack")
     public ResponseEntity<AgentCredentialAckResponse> acknowledgeCredential(
             @PathVariable String agentId,
@@ -94,5 +79,30 @@ public class AgentRegistrationController {
                 );
 
         return ResponseEntity.ok(response);
+    }
+
+    // ==================================================
+    // 4. ADMIN PHÊ DUYỆT AGENT
+    // ==================================================
+
+    /**
+     * Admin phê duyệt Agent đang chờ xác nhận.
+     *
+     * POST /api/agent-registration/{agentId}/approve
+     */
+    @PostMapping("/{agentId}/approve")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Map<String, Object>> approveAgent(
+            @PathVariable String agentId) {
+
+        agentRegistrationService.approveAgent(agentId);
+
+        return ResponseEntity.ok(
+                Map.of(
+                        "success", true,
+                        "message", "Phê duyệt Agent thành công",
+                        "agentId", agentId
+                )
+        );
     }
 }

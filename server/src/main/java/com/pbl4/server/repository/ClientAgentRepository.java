@@ -6,6 +6,8 @@ import com.pbl4.server.model.ClientAgent;
 
 import jakarta.persistence.LockModeType;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -22,6 +24,11 @@ public interface ClientAgentRepository
 
     // Tìm Agent theo trạng thái
     List<ClientAgent> findByStatus(AgentStatus status);
+
+    // Phân trang theo trạng thái
+    Page<ClientAgent> findByStatus(AgentStatus status, Pageable pageable);
+
+    long countByStatus(AgentStatus status);
 
     /**
      * Tìm và khóa bản ghi Agent trong transaction.

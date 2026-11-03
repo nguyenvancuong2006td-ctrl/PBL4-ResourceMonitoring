@@ -1,5 +1,6 @@
 package com.pbl4.server.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.pbl4.server.enums.AccountStatus;
 import jakarta.persistence.*;
 
@@ -21,6 +22,8 @@ public class Account {
     @Column(name = "username", length = 50, nullable = false, unique = true)
     private String username;
 
+    // Không bao giờ đưa mã băm mật khẩu ra JSON
+    @JsonIgnore
     @Column(name = "password_hash", length = 255, nullable = false)
     private String passwordHash;
 

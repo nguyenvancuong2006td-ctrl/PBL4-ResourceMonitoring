@@ -1,29 +1,17 @@
 package pbl4.agent;
 
 import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 
 import pbl4.agent.client.RegistrationClient;
-import pbl4.agent.client.ServerClient;
 import pbl4.agent.config.AgentConfig;
 import pbl4.agent.config.AgentSettings;
-import pbl4.agent.model.ClientSystemInfo;
-
 import pbl4.agent.monitoring.ClientInfoService;
-import pbl4.agent.monitoring.MonitoringService;
-
 import pbl4.agent.registration.CredentialStorage;
 import pbl4.agent.registration.RegistrationFailedException;
 import pbl4.agent.registration.RegistrationManager;
-
-import pbl4.agent.scheduler.HeartbeatScheduler;
-import pbl4.agent.scheduler.MonitoringScheduler;
-import pbl4.agent.scheduler.RemoteCommandScheduler;
-
-import pbl4.agent.service.RemoteCommandExecutor;
-
 
 @SpringBootApplication
 public class AgentApplication {
@@ -50,6 +38,10 @@ public class AgentApplication {
         app.setWebApplicationType(
                 WebApplicationType.NONE
         );
+
+        // Spring Boot mặc định bật chế độ headless, khi đó java.awt.Robot
+        // (thu màn hình trên máy X11) không hoạt động.
+        app.setHeadless(false);
 
         ConfigurableApplicationContext context =
                 app.run(args);
@@ -158,134 +150,21 @@ public class AgentApplication {
 
 
         // =========================================
-        // 5. INITIALIZE SERVER CLIENT
+        // 5. START AGENT SERVICES
+        //
+        //    AgentRuntime khởi động Heartbeat, Monitoring, Remote Command
+        //    và tự dừng / đăng ký lại / khởi động lại khi Server
+        //    từ chối Credential (bị thu hồi, vô hiệu hóa, hết hạn).
         // =========================================
 
-        ServerClient serverClient =
-                new ServerClient(config);
-
-        System.out.println("[AGENT] Server Client initialized.");
-
-
-        // =========================================
-        // 6. START HEARTBEAT SCHEDULER
-        // =========================================
-
-        HeartbeatScheduler heartbeatScheduler =
-                new HeartbeatScheduler(serverClient);
-
-        heartbeatScheduler.start();
-
-        System.out.println("[AGENT] Heartbeat Scheduler started.");
-
-
-        // =========================================
-        // 7. GET CLIENT SYSTEM INFORMATION
-        // =========================================
-
-        ClientSystemInfo info =
-                clientInfoService.getClientInfo(
-                        config.getAgentId()
+        AgentRuntime runtime =
+                new AgentRuntime(
+                        context,
+                        clientInfoService,
+                        credentialStorage,
+                        registrationManager
                 );
 
-        System.out.println();
-        System.out.println("========== CLIENT SYSTEM INFO ==========");
-
-        System.out.println(
-                "Client ID      : " + info.getClientId()
-        );
-
-        System.out.println(
-                "Hostname       : " + info.getHostname()
-        );
-
-        System.out.println(
-                "IP Address     : " + info.getIpAddress()
-        );
-
-        System.out.println(
-                "OS             : " + info.getOsName()
-        );
-
-        System.out.println(
-                "OS Version     : " + info.getOsVersion()
-        );
-
-        System.out.println(
-                "Kernel Version : " + info.getKernelVersion()
-        );
-
-        System.out.println(
-                "Boot Time      : " + info.getBootTime()
-        );
-
-        System.out.println("========================================");
-
-
-        // =========================================
-        // 8. INITIALIZE MONITORING SERVICE
-        // =========================================
-
-        MonitoringService monitoringService =
-                new MonitoringService();
-
-        System.out.println("[AGENT] Monitoring Service initialized.");
-
-
-        // =========================================
-        // 9. START MONITORING SCHEDULER
-        // =========================================
-
-        MonitoringScheduler monitoringScheduler =
-                new MonitoringScheduler(
-                        monitoringService,
-                        serverClient,
-                        config
-                );
-
-        monitoringScheduler.start();
-
-        System.out.println("[AGENT] Monitoring Scheduler started.");
-
-
-        // =========================================
-        // 10. INITIALIZE REMOTE COMMAND EXECUTOR
-        // =========================================
-
-        RemoteCommandExecutor executor =
-                new RemoteCommandExecutor(config);
-
-        System.out.println("[AGENT] Remote Command Executor initialized.");
-
-
-        // =========================================
-        // 11. START REMOTE COMMAND SCHEDULER
-        // =========================================
-
-        RemoteCommandScheduler commandScheduler =
-                new RemoteCommandScheduler(
-                        serverClient,
-                        executor
-                );
-
-        commandScheduler.start();
-
-        System.out.println("[AGENT] Remote Command Scheduler started.");
-
-
-        // =========================================
-        // 12. AGENT READY
-        // =========================================
-
-        System.out.println();
-        System.out.println("========================================");
-        System.out.println("          AGENT IS RUNNING");
-        System.out.println("========================================");
-
-        System.out.println("[AGENT] Heartbeat       : RUNNING");
-        System.out.println("[AGENT] Monitoring     : RUNNING");
-        System.out.println("[AGENT] Remote Command : RUNNING");
-        System.out.println("[AGENT] Screen Sharing : READY");
-        System.out.println("========================================");
+        runtime.start(config);
     }
 }

@@ -1,5 +1,6 @@
 package com.pbl4.server.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
@@ -13,6 +14,17 @@ public class WebSocketConfig
         implements WebSocketMessageBrokerConfigurer {
 
     private final WebSocketAuthChannelInterceptor authInterceptor;
+
+    /**
+     * Danh sách origin được phép kết nối WebSocket, phân cách bằng dấu phẩy.
+     * Dùng chung khóa cấu hình với ScreenStreamWebSocketConfig.
+     *
+     * Mặc định chỉ cho phép localhost. Khi triển khai, thêm vào
+     * application.properties, ví dụ:
+     *   app.ws.allowed-origins=https://ten-mien-frontend
+     */
+    @Value("${app.ws.allowed-origins:http://localhost:*,http://127.0.0.1:*}")
+    private String[] allowedOrigins;
 
     public WebSocketConfig(
             WebSocketAuthChannelInterceptor authInterceptor) {
@@ -44,10 +56,7 @@ public class WebSocketConfig
             StompEndpointRegistry registry) {
 
         registry.addEndpoint("/ws")
-                .setAllowedOriginPatterns(
-                        "http://localhost:*",
-                        "http://127.0.0.1:*"
-                );
+                .setAllowedOriginPatterns(allowedOrigins);
     }
 
     /**

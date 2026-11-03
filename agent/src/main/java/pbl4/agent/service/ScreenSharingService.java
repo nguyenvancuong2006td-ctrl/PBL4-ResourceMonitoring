@@ -4,19 +4,23 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import pbl4.agent.capture.JavaRobotCapture;
 import pbl4.agent.capture.ScreenCaptureProcess;
 import pbl4.agent.capture.ScreenCaptureSettings;
 import pbl4.agent.client.ScreenStreamClient;
 import pbl4.agent.config.AgentConfig;
+import pbl4.agent.control.RemoteInputController;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -33,7 +37,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *     1. Agent mở WebSocket tới Server (/ws/screen)
  *     2. Agent gửi AUTH (agentId + credential + sessionCode)
  *     3. Server trả JOINED
- *     4. Agent chạy script thu màn hình (Python + GStreamer)
+ *     4. Agent thu màn hình: Java Robot (máy X11) hoặc script
+ *        Python + GStreamer + Portal (máy Wayland)
  *     5. Mỗi khung hình JPEG từ script được gửi lên Server dạng nhị phân
  *        và Server chuyển tiếp cho trình xem của Admin
  *
@@ -64,6 +69,14 @@ public class ScreenSharingService {
     // Phiên chia sẻ đang hoạt động (null nếu không có). Bảo vệ bởi "this".
     private ActiveStream active;
 
+    // Bộ điều khiển chuột/bàn phím của phiên hiện tại (null nếu không
+    // hỗ trợ). Đọc từ luồng WebSocket nên dùng volatile, không cần khóa.
+    private volatile RemoteInputController currentInput;
+
+    // Tiến trình script Python (Wayland/portal): lệnh điều khiển được
+    // chuyển cho script qua stdin (null nếu đang dùng Java Robot).
+    private volatile ScreenCaptureProcess currentProcess;
+
     // Trạng thái chia sẻ màn hình
     private volatile boolean sharing = false;
 
@@ -81,7 +94,8 @@ public class ScreenSharingService {
         final String sessionCode;
         final ScreenStreamClient client;
 
-        volatile ScreenCaptureProcess capture;
+        // JavaRobotCapture hoặc ScreenCaptureProcess
+        volatile AutoCloseable capture;
 
         // Đã báo lỗi truyền tải (tránh tạo nhiều luồng dọn dẹp)
         final AtomicBoolean failureHandled = new AtomicBoolean(false);
@@ -149,8 +163,17 @@ public class ScreenSharingService {
 
         validateAgentConfig();
 
+        // Chọn cách thu theo máy này và kiểm tra điều kiện TRƯỚC khi mở
+        // WebSocket: thiếu thư viện thì báo lỗi rõ ràng ngay
+        final String backend = resolveBackend();
+
+        if (!"java".equals(backend)) {
+            checkPythonDependencies(backend);
+        }
+
         System.out.println(
                 "[SCREEN SHARING] Đang khởi tạo phiên: " + sessionCode
+                        + " (backend: " + backend + ")"
         );
 
         final String code = sessionCode;
@@ -173,19 +196,11 @@ public class ScreenSharingService {
 
             waitForJoin(joined);
 
-            // 2. Khởi chạy script thu màn hình
-            Path script = extractScript();
+            // 2. Bắt đầu thu màn hình (Java Robot hoặc script Python)
+            startCapture(stream, backend);
 
-            ScreenCaptureProcess capture = new ScreenCaptureProcess(
-                    buildCaptureCommand(script),
-                    frame -> forwardFrame(stream, frame),
-                    event -> forwardEvent(stream, event),
-                    exitCode -> onCaptureExited(stream, exitCode)
-            );
-
-            stream.capture = capture;
-
-            capture.start();
+            // 2b. Bật điều khiển chuột/bàn phím (nếu máy này hỗ trợ)
+            setupRemoteControl(stream, backend);
 
             // 3. Chỉ cập nhật trạng thái khi mọi bước thành công
             active = stream;
@@ -203,11 +218,8 @@ public class ScreenSharingService {
         } catch (Exception e) {
 
             // Dọn dẹp nếu có bước thất bại
-            ScreenCaptureProcess capture = stream.capture;
-
-            if (capture != null) {
-                capture.close();
-            }
+            closeCapture(stream.capture);
+            closeInput();
 
             client.close();
 
@@ -288,11 +300,8 @@ public class ScreenSharingService {
         }
 
         try {
-            ScreenCaptureProcess capture = stream.capture;
-
-            if (capture != null) {
-                capture.close();
-            }
+            closeInput();
+            closeCapture(stream.capture);
 
         } finally {
 
@@ -474,10 +483,11 @@ public class ScreenSharingService {
                     System.err.println(
                             "[SCREEN SHARING] Server báo lỗi: " + message);
                 }
-            }
 
-            // Các loại khác (ví dụ điều khiển chuột/bàn phím sau này)
-            // sẽ được xử lý tại đây.
+            } else if ("INPUT".equals(type)) {
+
+                handleInput(sessionCode, node);
+            }
         }
 
         @Override
@@ -513,6 +523,304 @@ public class ScreenSharingService {
     // ==================================================================
     // HÀM PHỤ
     // ==================================================================
+
+    // ==================================================================
+    // ĐIỀU KHIỂN CHUỘT / BÀN PHÍM TỪ XA
+    // ==================================================================
+
+    /**
+     * Khởi tạo bộ điều khiển và báo cho trình xem biết có dùng được không
+     * qua sự kiện STATUS (state = CONTROL_READY | CONTROL_UNSUPPORTED).
+     */
+    private void setupRemoteControl(ActiveStream stream, String backend) {
+
+        // Wayland: script Python tự báo CONTROL_READY / CONTROL_UNSUPPORTED
+        // sau khi người dùng ở máy Client xác nhận trong hộp thoại Portal
+        if ("portal".equals(backend)) {
+
+            currentProcess = (ScreenCaptureProcess) stream.capture;
+
+            return;
+        }
+
+        String state;
+        String message;
+
+        if (!RemoteInputController.isEnabledByConfig()) {
+
+            state = "CONTROL_UNSUPPORTED";
+            message = "Điều khiển từ xa đã bị tắt trên máy Client.";
+
+        } else if (!"java".equals(backend)) {
+
+            // Wayland / portal: Robot không điều khiển được máy thật
+            state = "CONTROL_UNSUPPORTED";
+            message = "Điều khiển từ xa chưa hỗ trợ cách thu '" + backend
+                    + "' (cần phiên X11).";
+
+        } else {
+
+            try {
+                currentInput = new RemoteInputController();
+
+                state = "CONTROL_READY";
+                message = "Có thể điều khiển chuột và bàn phím.";
+
+            } catch (IOException e) {
+
+                state = "CONTROL_UNSUPPORTED";
+                message = describe(e);
+            }
+        }
+
+        System.out.println(
+                "[SCREEN SHARING] " + state + ": " + message);
+
+        try {
+            ObjectNode event = objectMapper.createObjectNode();
+
+            event.put("type", "STATUS");
+            event.put("state", state);
+            event.put("message", message);
+
+            stream.client.sendText(event.toString());
+
+        } catch (Exception e) {
+
+            System.err.println(
+                    "[SCREEN SHARING] Không báo được trạng thái điều khiển: "
+                            + describe(e));
+        }
+    }
+
+    /**
+     * Nhận sự kiện INPUT (Server đã kiểm tra và lọc) từ trình xem.
+     */
+    private void handleInput(String sessionCode, JsonNode node) {
+
+        if (!sessionCode.equals(currentSessionCode)) {
+            return;
+        }
+
+        RemoteInputController input = currentInput;
+
+        if (input == null) {
+
+            // Wayland: chuyển lệnh cho script Python (Portal RemoteDesktop)
+            ScreenCaptureProcess process = currentProcess;
+
+            if (process != null) {
+                process.sendCommand(toScriptCommand(node));
+            }
+
+            return;
+        }
+
+        input.handle(
+                node.path("event").asText(""),
+                node.path("x").asDouble(0),
+                node.path("y").asDouble(0),
+                node.path("button").asInt(0),
+                node.path("delta").asInt(0),
+                node.path("code").asText(""));
+    }
+
+    /**
+     * Dựng dòng lệnh gửi cho script: chỉ chép các trường đã biết.
+     */
+    private String toScriptCommand(JsonNode node) {
+
+        ObjectNode command = objectMapper.createObjectNode();
+
+        command.put("event", node.path("event").asText(""));
+        command.put("x", node.path("x").asDouble(0));
+        command.put("y", node.path("y").asDouble(0));
+        command.put("button", node.path("button").asInt(0));
+        command.put("delta", node.path("delta").asInt(0));
+        command.put("code", node.path("code").asText(""));
+
+        return command.toString();
+    }
+
+    private void closeInput() {
+
+        RemoteInputController input = currentInput;
+
+        currentInput = null;
+        currentProcess = null;
+
+        if (input != null) {
+            input.close();
+        }
+    }
+
+    // ==================================================================
+    // CHỌN CÁCH THU MÀN HÌNH
+    // ==================================================================
+
+    private static final String PYTHON_INSTALL_HINT =
+            "Cài bằng: sudo apt install python3-dbus python3-gi "
+                    + "gir1.2-gstreamer-1.0 gstreamer1.0-pipewire "
+                    + "gstreamer1.0-plugins-base gstreamer1.0-plugins-good "
+                    + "gstreamer1.0-x";
+
+    /**
+     * Xác định cách thu màn hình cho máy này.
+     *
+     *   backend cấu hình khác "auto" -> dùng đúng như cấu hình
+     *   Wayland                      -> "portal" (script Python + Portal)
+     *   X11                          -> "java"   (Java Robot, không cần Python)
+     *
+     * Kiểm tra Wayland TRƯỚC: trên Wayland, XWayland vẫn đặt biến DISPLAY,
+     * nếu dùng Robot sẽ chỉ chụp được màn đen.
+     */
+    private String resolveBackend() {
+
+        String configured = settings.getBackend();
+
+        if (!"auto".equals(configured)) {
+            return configured;
+        }
+
+        String sessionType = envOrEmpty("XDG_SESSION_TYPE")
+                .toLowerCase(Locale.ROOT);
+
+        boolean wayland = "wayland".equals(sessionType)
+                || (!"x11".equals(sessionType)
+                        && !envOrEmpty("WAYLAND_DISPLAY").isBlank());
+
+        if (wayland) {
+            return "portal";
+        }
+
+        if (!envOrEmpty("DISPLAY").isBlank()) {
+            return "java";
+        }
+
+        throw new IllegalStateException(
+                "Máy Client không có phiên đồ họa (thiếu DISPLAY và "
+                        + "WAYLAND_DISPLAY). Agent phải chạy trong phiên "
+                        + "đăng nhập của người dùng.");
+    }
+
+    private String envOrEmpty(String name) {
+
+        String value = System.getenv(name);
+
+        return value == null ? "" : value;
+    }
+
+    /**
+     * Kiểm tra máy Client có Python và các thư viện cần cho script
+     * (GStreamer, và D-Bus nếu dùng Portal). Thiếu thì báo lỗi kèm
+     * hướng dẫn cài đặt thay vì để script tự thoát giữa chừng.
+     */
+    private void checkPythonDependencies(String backend) {
+
+        String code = "import gi; gi.require_version('Gst','1.0'); "
+                + "from gi.repository import Gst"
+                + ("portal".equals(backend) ? "; import dbus" : "");
+
+        try {
+            Process process = new ProcessBuilder(
+                    settings.getPythonPath(), "-c", code)
+                    .redirectErrorStream(true)
+                    .start();
+
+            if (!process.waitFor(15, TimeUnit.SECONDS)) {
+
+                process.destroyForcibly();
+
+                throw new IllegalStateException(
+                        "Kiểm tra thư viện Python quá thời gian.");
+            }
+
+            if (process.exitValue() != 0) {
+
+                String output = new String(
+                        process.getInputStream().readAllBytes(),
+                        StandardCharsets.UTF_8).trim();
+
+                String lastLine = output.contains("\n")
+                        ? output.substring(output.lastIndexOf('\n') + 1)
+                        : output;
+
+                throw new IllegalStateException(
+                        "Máy Client thiếu thư viện Python cho cách thu '"
+                                + backend + "' (" + lastLine + "). "
+                                + PYTHON_INSTALL_HINT);
+            }
+
+        } catch (IOException e) {
+
+            throw new IllegalStateException(
+                    "Không chạy được Python (" + settings.getPythonPath()
+                            + "): " + describe(e)
+                            + ". Cài python3 hoặc đặt AGENT_PYTHON.", e);
+
+        } catch (InterruptedException e) {
+
+            Thread.currentThread().interrupt();
+
+            throw new IllegalStateException(
+                    "Bị ngắt khi kiểm tra thư viện Python.", e);
+        }
+    }
+
+    /**
+     * Khởi chạy việc thu màn hình theo backend đã chọn.
+     */
+    private void startCapture(ActiveStream stream, String backend)
+            throws IOException {
+
+        if ("java".equals(backend)) {
+
+            JavaRobotCapture capture = new JavaRobotCapture(
+                    settings.getFps(),
+                    settings.getMaxWidth(),
+                    settings.getQuality(),
+                    frame -> forwardFrame(stream, frame),
+                    event -> forwardEvent(stream, event),
+                    exitCode -> onCaptureExited(stream, exitCode)
+            );
+
+            stream.capture = capture;
+
+            capture.start();
+
+            return;
+        }
+
+        Path script = extractScript();
+
+        ScreenCaptureProcess capture = new ScreenCaptureProcess(
+                buildCaptureCommand(script, backend),
+                frame -> forwardFrame(stream, frame),
+                event -> forwardEvent(stream, event),
+                exitCode -> onCaptureExited(stream, exitCode)
+        );
+
+        stream.capture = capture;
+
+        capture.start();
+    }
+
+    private void closeCapture(AutoCloseable capture) {
+
+        if (capture == null) {
+            return;
+        }
+
+        try {
+            capture.close();
+
+        } catch (Exception e) {
+
+            System.err.println(
+                    "[SCREEN SHARING] Lỗi dừng thu màn hình: "
+                            + describe(e));
+        }
+    }
 
     private void validateAgentConfig() {
 
@@ -599,7 +907,7 @@ public class ScreenSharingService {
         return target;
     }
 
-    private List<String> buildCaptureCommand(Path script) {
+    private List<String> buildCaptureCommand(Path script, String backend) {
 
         List<String> command = new ArrayList<>();
 
@@ -607,7 +915,7 @@ public class ScreenSharingService {
         command.add(script.toString());
 
         command.add("--backend");
-        command.add(settings.getBackend());
+        command.add(backend);
 
         command.add("--fps");
         command.add(String.valueOf(settings.getFps()));
@@ -620,6 +928,13 @@ public class ScreenSharingService {
 
         command.add("--restore-token-file");
         command.add(settings.getRestoreTokenPath().toString());
+
+        // Wayland: cho script dùng RemoteDesktop Portal để nhận lệnh
+        if ("portal".equals(backend)
+                && RemoteInputController.isEnabledByConfig()) {
+
+            command.add("--remote-control");
+        }
 
         return command;
     }

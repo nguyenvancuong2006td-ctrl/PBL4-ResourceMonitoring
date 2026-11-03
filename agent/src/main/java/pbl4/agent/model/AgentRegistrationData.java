@@ -13,6 +13,14 @@ public class AgentRegistrationData {
     private String agentVersion;
     private String registrationToken;
 
+    // Thông tin phần cứng tĩnh (CPU, RAM). Có thể null nếu không đọc được.
+    private String cpuModel;
+    private String cpuManufacturer;
+    private Integer cpuCoreCount;
+    private Integer cpuThreadCount;
+    private Double cpuFrequencyMhz;
+    private Long memoryTotalBytes;
+
     public AgentRegistrationData() {
     }
 
@@ -98,5 +106,53 @@ public class AgentRegistrationData {
 
     public void setRegistrationToken(String registrationToken) {
         this.registrationToken = registrationToken;
+    }
+
+    public String getCpuModel() {
+        return cpuModel;
+    }
+
+    public void setCpuModel(String cpuModel) {
+        this.cpuModel = cpuModel;
+    }
+
+    public String getCpuManufacturer() {
+        return cpuManufacturer;
+    }
+
+    public void setCpuManufacturer(String cpuManufacturer) {
+        this.cpuManufacturer = cpuManufacturer;
+    }
+
+    public Integer getCpuCoreCount() {
+        return cpuCoreCount;
+    }
+
+    public void setCpuCoreCount(Integer cpuCoreCount) {
+        this.cpuCoreCount = cpuCoreCount;
+    }
+
+    public Integer getCpuThreadCount() {
+        return cpuThreadCount;
+    }
+
+    public void setCpuThreadCount(Integer cpuThreadCount) {
+        this.cpuThreadCount = cpuThreadCount;
+    }
+
+    public Double getCpuFrequencyMhz() {
+        return cpuFrequencyMhz;
+    }
+
+    public void setCpuFrequencyMhz(Double cpuFrequencyMhz) {
+        this.cpuFrequencyMhz = cpuFrequencyMhz;
+    }
+
+    public Long getMemoryTotalBytes() {
+        return memoryTotalBytes;
+    }
+
+    public void setMemoryTotalBytes(Long memoryTotalBytes) {
+        this.memoryTotalBytes = memoryTotalBytes;
     }
 }

@@ -1,5 +1,6 @@
 package com.pbl4.server.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -15,11 +16,26 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+import java.util.List;
+
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    /**
+     * Các origin của frontend được phép gọi API, phân cách bằng dấu phẩy.
+     * Mặc định cho phép localhost (React dev server).
+     * Khi triển khai, thêm vào application.properties, ví dụ:
+     *   app.cors.allowed-origins=https://ten-mien-frontend
+     */
+    @Value("${app.cors.allowed-origins:http://localhost:*,http://127.0.0.1:*}")
+    private String[] corsAllowedOrigins;
 
     public SecurityConfig(
             JwtAuthenticationFilter jwtAuthenticationFilter) {
@@ -36,6 +52,32 @@ public class SecurityConfig {
     }
 
     // ==================================================
+    // CORS
+    // ==================================================
+
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+
+        CorsConfiguration config = new CorsConfiguration();
+
+        config.setAllowedOriginPatterns(List.of(corsAllowedOrigins));
+        config.setAllowedMethods(List.of(
+                "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"
+        ));
+        config.setAllowedHeaders(List.of(
+                "Authorization", "Content-Type"
+        ));
+        config.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source =
+                new UrlBasedCorsConfigurationSource();
+
+        source.registerCorsConfiguration("/api/**", config);
+
+        return source;
+    }
+
+    // ==================================================
     // SECURITY FILTER CHAIN
     // ==================================================
 
@@ -44,6 +86,9 @@ public class SecurityConfig {
             HttpSecurity http) throws Exception {
 
         http
+
+                // Cho phép frontend (origin khác) gọi API
+                .cors(cors -> { })
 
                 // REST API không sử dụng CSRF
                 .csrf(AbstractHttpConfigurer::disable)
@@ -95,6 +140,18 @@ public class SecurityConfig {
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/api/auth/login"
+                        ).permitAll()
+
+                        // ------------------------------------------
+                        // 3b. QUÊN MẬT KHẨU
+                        // ------------------------------------------
+
+                        // Người dùng chưa đăng nhập được yêu cầu OTP
+                        // và đặt lại mật khẩu mới.
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/auth/forgot-password",
+                                "/api/auth/reset-password"
                         ).permitAll()
 
                         // ------------------------------------------

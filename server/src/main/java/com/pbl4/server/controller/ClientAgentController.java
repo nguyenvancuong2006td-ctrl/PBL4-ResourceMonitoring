@@ -1,5 +1,7 @@
 package com.pbl4.server.controller;
 
+import com.pbl4.server.dto.response.PageResponse;
+import com.pbl4.server.enums.AgentStatus;
 import com.pbl4.server.model.ClientAgent;
 import com.pbl4.server.service.AgentCredentialService;
 import com.pbl4.server.service.AgentRegistrationService;
@@ -86,6 +88,23 @@ public class ClientAgentController {
                 clientAgentService.getAllAgents();
 
         return ResponseEntity.ok(agents);
+    }
+
+    // ==========================================
+    // DANH SÁCH AGENT CÓ PHÂN TRANG
+    // page bắt đầu từ 0, size tối đa 100, status = lọc trạng thái
+    // ==========================================
+
+    @GetMapping("/page")
+    @PreAuthorize("hasAuthority('AGENT_VIEW')")
+    public ResponseEntity<PageResponse<ClientAgent>> getAgentsPage(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) AgentStatus status) {
+
+        return ResponseEntity.ok(
+                clientAgentService.getAgentsPage(page, size, status)
+        );
     }
 
     // ==========================================
@@ -211,6 +230,45 @@ public class ClientAgentController {
     }
 
     // ==========================================
+    // THU HỒI AGENT
+    // ==========================================
+
+    @PostMapping("/{agentId}/revoke")
+    @PreAuthorize("hasAuthority('AGENT_MANAGE')")
+    public ResponseEntity<String> revokeAgent(
+            @PathVariable String agentId) {
+
+        if (agentId == null || agentId.isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Agent ID không hợp lệ"
+            );
+        }
+
+        try {
+            agentRegistrationService.revokeAgent(agentId.trim());
+
+            return ResponseEntity.ok(
+                    "Đã thu hồi Agent. Credential không còn hiệu lực."
+            );
+
+        } catch (IllegalArgumentException e) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    e.getMessage()
+            );
+
+        } catch (IllegalStateException e) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    e.getMessage()
+            );
+        }
+    }
+
+    // ==========================================
     // HEARTBEAT
     // ==========================================
 
@@ -278,6 +336,7 @@ public class ClientAgentController {
 
     // ==========================================
     // XÓA CLIENT AGENT
+    // Xóa luôn Client và mọi dữ liệu liên quan (không thể hoàn tác)
     // ==========================================
 
     @DeleteMapping("/{agentId}")
@@ -292,10 +351,27 @@ public class ClientAgentController {
             );
         }
 
-        clientAgentService.deleteAgent(agentId.trim());
+        try {
+            clientAgentService.deleteAgent(agentId.trim());
 
-        return ResponseEntity.ok(
-                "Xóa Client Agent thành công"
-        );
+            return ResponseEntity.ok(
+                    "Xóa Client Agent thành công. "
+                            + "Client và toàn bộ dữ liệu liên quan đã được xóa."
+            );
+
+        } catch (IllegalArgumentException e) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    e.getMessage()
+            );
+
+        } catch (IllegalStateException e) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    e.getMessage()
+            );
+        }
     }
 }

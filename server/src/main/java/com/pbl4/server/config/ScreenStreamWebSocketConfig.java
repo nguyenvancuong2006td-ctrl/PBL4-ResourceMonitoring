@@ -2,6 +2,7 @@ package com.pbl4.server.config;
 
 import com.pbl4.server.websocket.ScreenStreamWebSocketHandler;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
@@ -23,6 +24,14 @@ public class ScreenStreamWebSocketConfig implements WebSocketConfigurer {
 
     private final ScreenStreamWebSocketHandler handler;
 
+    /**
+     * Danh sách origin được phép, dùng chung khóa cấu hình với
+     * WebSocketConfig (STOMP). Phân cách bằng dấu phẩy.
+     * Mặc định chỉ cho phép localhost.
+     */
+    @Value("${app.ws.allowed-origins:http://localhost:*,http://127.0.0.1:*}")
+    private String[] allowedOrigins;
+
     public ScreenStreamWebSocketConfig(ScreenStreamWebSocketHandler handler) {
         this.handler = handler;
     }
@@ -31,11 +40,10 @@ public class ScreenStreamWebSocketConfig implements WebSocketConfigurer {
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
 
         // Agent (Java) không gửi header Origin nên không bị chặn;
-        // trình duyệt của Admin phải đến từ các origin dưới đây.
+        // trình duyệt của Admin phải đến từ các origin cấu hình ở
+        // app.ws.allowed-origins.
         registry.addHandler(handler, "/ws/screen")
-                .setAllowedOriginPatterns(
-                        "http://localhost:*",
-                        "http://127.0.0.1:*");
+                .setAllowedOriginPatterns(allowedOrigins);
     }
 
     /**

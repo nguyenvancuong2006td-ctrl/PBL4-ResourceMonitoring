@@ -15,7 +15,8 @@ import java.nio.file.Paths;
  *   agent.screen.fps        / AGENT_SCREEN_FPS        : số khung hình tối đa mỗi giây (mặc định 8)
  *   agent.screen.max-width  / AGENT_SCREEN_MAX_WIDTH  : chiều rộng tối đa, 0 = không thu nhỏ (mặc định 1280)
  *   agent.screen.quality    / AGENT_SCREEN_QUALITY    : chất lượng JPEG 1-100 (mặc định 60)
- *   agent.screen.backend    / AGENT_SCREEN_BACKEND    : auto | portal | x11 | test (mặc định auto)
+ *   agent.screen.backend    / AGENT_SCREEN_BACKEND    : auto | java | portal | x11 | test (mặc định auto)
+ *                                                       auto: X11 -> java (không cần Python), Wayland -> portal
  *   agent.python            / AGENT_PYTHON            : đường dẫn python3 hệ thống (mặc định /usr/bin/python3)
  *   agent.data-dir          / AGENT_DATA_DIR          : thư mục dữ liệu Agent (mặc định ~/.pbl4-agent)
  */
@@ -57,11 +58,12 @@ public final class ScreenCaptureSettings {
         if (!"auto".equals(backend)
                 && !"portal".equals(backend)
                 && !"x11".equals(backend)
+                && !"java".equals(backend)
                 && !"test".equals(backend)) {
 
             throw new IllegalArgumentException(
                     "Backend không hợp lệ: " + backend
-                            + " (chỉ hỗ trợ auto, portal, x11, test).");
+                            + " (chỉ hỗ trợ auto, java, portal, x11, test).");
         }
 
         this.fps = fps;

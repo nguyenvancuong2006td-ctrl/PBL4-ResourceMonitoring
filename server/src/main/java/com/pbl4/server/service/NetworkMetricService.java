@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -27,6 +28,19 @@ public class NetworkMetricService {
     public NetworkMetricService(
             NetworkMetricRepository networkMetricRepository) {
         this.networkMetricRepository = networkMetricRepository;
+    }
+
+    /**
+     * Xóa bộ đếm byte lần đo trước của các giao diện mạng khỏi RAM.
+     * Gọi khi Client bị xóa để không giữ dữ liệu của giao diện không còn.
+     */
+    public void evictInterfaces(Collection<Long> interfaceIds) {
+
+        if (interfaceIds == null || interfaceIds.isEmpty()) {
+            return;
+        }
+
+        previousSamples.keySet().removeAll(interfaceIds);
     }
 
     public NetworkMetric saveNetworkMetric(

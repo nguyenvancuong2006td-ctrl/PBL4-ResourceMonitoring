@@ -111,6 +111,13 @@ public class RegistrationClient {
         body.put("agentVersion", data.getAgentVersion());
         body.put("registrationToken", data.getRegistrationToken());
 
+        putIfPresent(body, "cpuModel", data.getCpuModel());
+        putIfPresent(body, "cpuManufacturer", data.getCpuManufacturer());
+        putIfPresent(body, "cpuCoreCount", data.getCpuCoreCount());
+        putIfPresent(body, "cpuThreadCount", data.getCpuThreadCount());
+        putIfPresent(body, "cpuFrequencyMhz", data.getCpuFrequencyMhz());
+        putIfPresent(body, "memoryTotalBytes", data.getMemoryTotalBytes());
+
         JsonNode json = postJson(
                 "/api/agent-registration",
                 body,
@@ -389,6 +396,14 @@ public class RegistrationClient {
         }
 
         return " - " + message;
+    }
+
+    private void putIfPresent(
+            Map<String, Object> body, String key, Object value) {
+
+        if (value != null) {
+            body.put(key, value);
+        }
     }
 
     private String text(JsonNode json, String field) {

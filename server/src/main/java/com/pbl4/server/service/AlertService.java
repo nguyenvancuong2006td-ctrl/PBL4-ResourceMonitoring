@@ -38,6 +38,25 @@ public class AlertService {
         this.alertRuleRepository = alertRuleRepository;
     }
 
+    /**
+     * Xóa trạng thái "đang vượt ngưỡng" của một Client khỏi RAM.
+     *
+     * Gọi khi Client bị xóa. Cần thiết vì ID Client có thể được cấp lại
+     * (CLIENT-xxx = số lớn nhất hiện có + 1); nếu không xóa, Client mới
+     * trùng ID sẽ thừa hưởng mốc thời gian vi phạm của Client cũ.
+     */
+    public void evictClientState(String clientId) {
+
+        if (clientId == null || clientId.isBlank()) {
+            return;
+        }
+
+        // Khóa có dạng "<clientId>:<ruleId>:<resourceType>"
+        String prefix = clientId + ":";
+
+        exceededSince.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
     private String createKey(
             Client client,
             AlertRule rule,

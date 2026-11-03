@@ -6,6 +6,9 @@ import tools.jackson.databind.ObjectMapper;
 
 import com.pbl4.server.dto.request.CreateRemoteCommandRequest;
 import com.pbl4.server.dto.response.AgentRemoteCommandResponse;
+import com.pbl4.server.dto.response.PageResponse;
+import com.pbl4.server.enums.CommandStatus;
+import com.pbl4.server.enums.CommandType;
 import com.pbl4.server.model.Account;
 import com.pbl4.server.model.RemoteCommand;
 import com.pbl4.server.repository.AccountRepository;
@@ -79,22 +82,28 @@ public class RemoteCommandController {
                         ));
             }
 
-            JsonNode parametersNode = request.getParameters();
-            String parameters = null;
+            CommandType commandType = request.getCommandType();
 
-            if (parametersNode != null
-                    && !parametersNode.isNull()) {
+            // Lệnh chia sẻ màn hình bắt buộc đi qua API phiên
+            // (/api/screen-sharing/sessions) để server tạo và kiểm tra
+            // phiên, sessionCode, quyền sở hữu. Không cho tạo trực tiếp
+            // tại đây vì sẽ vượt qua các kiểm tra đó.
+            if (commandType == CommandType.START_SCREEN_SHARING
+                    || commandType == CommandType.STOP_SCREEN_SHARING) {
 
-                if (!parametersNode.isObject()) {
-                    return ResponseEntity.badRequest()
-                            .body(Map.of(
-                                    "message",
-                                    "parameters phải là một JSON object."
-                            ));
-                }
-
-                parameters = parametersNode.toString();
+                return ResponseEntity.badRequest()
+                        .body(Map.of(
+                                "message",
+                                "Lệnh chia sẻ màn hình phải dùng API "
+                                        + "/api/screen-sharing/sessions."
+                        ));
             }
+
+            // Kiểm tra và dựng lại parameters theo từng loại lệnh
+            String parameters = buildSafeParameters(
+                    commandType,
+                    request.getParameters()
+            );
 
             RemoteCommand command =
                     remoteCommandService.createCommand(
@@ -130,6 +139,44 @@ public class RemoteCommandController {
             ).body(Map.of(
                     "message",
                     "Không thể tạo lệnh Remote."
+            ));
+        }
+    }
+
+    /**
+     * Danh sách lệnh của TOÀN hệ thống (mới nhất trước, có phân trang).
+     *
+     * GET /api/remote/commands
+     *     ?page=0&size=20&clientId=...&status=FAILED&commandType=SHUTDOWN
+     */
+    @GetMapping
+    @PreAuthorize("hasAnyAuthority('REMOTE_COMMAND','HISTORY_VIEW')")
+    public ResponseEntity<?> getAllCommands(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String clientId,
+            @RequestParam(required = false) CommandStatus status,
+            @RequestParam(required = false) CommandType commandType) {
+
+        try {
+            return ResponseEntity.ok(
+                    PageResponse.of(
+                            remoteCommandService.searchCommands(
+                                    page, size, clientId,
+                                    status, commandType
+                            ),
+                            this::toSafeCommandResponse
+                    )
+            );
+
+        } catch (Exception e) {
+            e.printStackTrace();
+
+            return ResponseEntity.status(
+                    HttpStatus.INTERNAL_SERVER_ERROR
+            ).body(Map.of(
+                    "message",
+                    "Không thể lấy danh sách lệnh Remote."
             ));
         }
     }
@@ -462,11 +509,78 @@ public class RemoteCommandController {
         response.put("parameters", command.getParameters());
         response.put("result", command.getResult());
         response.put("errorMessage", command.getErrorMessage());
+        response.put(
+                "requestedBy",
+                command.getAccount() != null
+                        ? command.getAccount().getUsername()
+                        : null
+        );
+        response.put("createdAt", command.getCreatedAt());
         response.put("sentAt", command.getSentAt());
         response.put("startedAt", command.getStartedAt());
         response.put("completedAt", command.getCompletedAt());
 
         return response;
+    }
+
+    /**
+     * Kiểm tra parameters theo loại lệnh và dựng JSON MỚI để lưu,
+     * không lưu nguyên dữ liệu client gửi lên.
+     *
+     *  - KILL_PROCESS      : bắt buộc có pid là số nguyên > 0.
+     *  - SHUTDOWN, RESTART : không dùng tham số, bỏ qua parameters.
+     *
+     * @throws IllegalArgumentException nếu parameters không hợp lệ
+     */
+    private String buildSafeParameters(
+            CommandType commandType,
+            JsonNode parametersNode) {
+
+        boolean empty = parametersNode == null
+                || parametersNode.isNull();
+
+        if (!empty && !parametersNode.isObject()) {
+            throw new IllegalArgumentException(
+                    "parameters phải là một JSON object.");
+        }
+
+        switch (commandType) {
+
+            case KILL_PROCESS: {
+
+                if (empty) {
+                    throw new IllegalArgumentException(
+                            "Lệnh KILL_PROCESS yêu cầu parameters.pid.");
+                }
+
+                JsonNode pidNode = parametersNode.get("pid");
+
+                if (pidNode == null
+                        || !pidNode.isIntegralNumber()
+                        || !pidNode.canConvertToLong()) {
+
+                    throw new IllegalArgumentException(
+                            "pid phải là số nguyên hợp lệ.");
+                }
+
+                long pid = pidNode.longValue();
+
+                if (pid <= 0) {
+                    throw new IllegalArgumentException(
+                            "pid phải lớn hơn 0.");
+                }
+
+                return "{\"pid\":" + pid + "}";
+            }
+
+            case SHUTDOWN:
+            case RESTART:
+                return null;
+
+            default:
+                throw new IllegalArgumentException(
+                        "Loại lệnh không được hỗ trợ ở API này.");
+        }
     }
 
     /**

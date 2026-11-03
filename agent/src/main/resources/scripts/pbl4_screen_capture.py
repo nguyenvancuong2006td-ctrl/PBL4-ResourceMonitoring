@@ -10,7 +10,10 @@ Giao thức:
   stdout : [4 byte độ dài big-endian][dữ liệu JPEG] lặp lại
   stderr : dòng sự kiện   PBL4_EVENT {"type":"STATUS","state":"...","message":"..."}
            (các dòng khác là log thường)
-  stdin  : không dùng. Khi stdin đóng (Agent chết) script tự thoát.
+  stdin  : lệnh điều khiển chuột/bàn phím, mỗi dòng một JSON, ví dụ
+           {"event":"MOUSE_MOVE","x":0.5,"y":0.5}
+           (chỉ backend portal và khi chạy với --remote-control).
+           Khi stdin đóng (Agent chết) script tự thoát.
 
 Backend thu màn hình:
   portal : xdg-desktop-portal ScreenCast + PipeWire (Wayland, cũng chạy được trên X11 GNOME)
@@ -19,6 +22,9 @@ Backend thu màn hình:
   auto   : x11 nếu phiên là X11, ngược lại portal
 
 Với backend portal, người dùng ở máy Client phải bấm "Share" lần đầu.
+Khi chạy với --remote-control, script dùng thêm RemoteDesktop Portal để
+nhận lệnh chuột/bàn phím từ Agent (Wayland); người dùng phải cho phép
+"điều khiển từ xa" trong hộp thoại của hệ thống.
 Script lưu restore_token để các lần sau không phải xác nhận lại
 (nếu Portal hỗ trợ).
 
@@ -85,6 +91,59 @@ PORTAL_OBJECT_PATH = "/org/freedesktop/portal/desktop"
 SCREENCAST_INTERFACE = "org.freedesktop.portal.ScreenCast"
 REQUEST_INTERFACE = "org.freedesktop.portal.Request"
 SESSION_INTERFACE = "org.freedesktop.portal.Session"
+REMOTEDESKTOP_INTERFACE = "org.freedesktop.portal.RemoteDesktop"
+
+# Nút chuột: MouseEvent.button của JS -> mã evdev (linux/input-event-codes.h)
+BUTTON_CODES = {0: 272, 1: 274, 2: 273}   # BTN_LEFT, BTN_MIDDLE, BTN_RIGHT
+
+
+def _build_key_codes():
+    """KeyboardEvent.code của JS -> mã phím evdev (phím vật lý)."""
+    codes = {}
+
+    letters = {
+        "Q": 16, "W": 17, "E": 18, "R": 19, "T": 20, "Y": 21, "U": 22,
+        "I": 23, "O": 24, "P": 25, "A": 30, "S": 31, "D": 32, "F": 33,
+        "G": 34, "H": 35, "J": 36, "K": 37, "L": 38, "Z": 44, "X": 45,
+        "C": 46, "V": 47, "B": 48, "N": 49, "M": 50,
+    }
+
+    for letter, code in letters.items():
+        codes["Key" + letter] = code
+
+    for digit in range(1, 10):
+        codes["Digit%d" % digit] = 1 + digit      # Digit1 = 2 ... Digit9 = 10
+
+    codes["Digit0"] = 11
+
+    for number in range(1, 11):
+        codes["F%d" % number] = 58 + number       # F1 = 59 ... F10 = 68
+
+    codes["F11"] = 87
+    codes["F12"] = 88
+
+    codes.update({
+        "Escape": 1, "Minus": 12, "Equal": 13, "Backspace": 14, "Tab": 15,
+        "BracketLeft": 26, "BracketRight": 27, "Enter": 28,
+        "ControlLeft": 29, "Semicolon": 39, "Quote": 40, "Backquote": 41,
+        "ShiftLeft": 42, "Backslash": 43, "Comma": 51, "Period": 52,
+        "Slash": 53, "ShiftRight": 54, "NumpadMultiply": 55,
+        "AltLeft": 56, "Space": 57, "CapsLock": 58, "NumLock": 69,
+        "ScrollLock": 70, "Numpad7": 71, "Numpad8": 72, "Numpad9": 73,
+        "NumpadSubtract": 74, "Numpad4": 75, "Numpad5": 76, "Numpad6": 77,
+        "NumpadAdd": 78, "Numpad1": 79, "Numpad2": 80, "Numpad3": 81,
+        "Numpad0": 82, "NumpadDecimal": 83, "NumpadEnter": 96,
+        "ControlRight": 97, "NumpadDivide": 98, "PrintScreen": 99,
+        "AltRight": 100, "Home": 102, "ArrowUp": 103, "PageUp": 104,
+        "ArrowLeft": 105, "ArrowRight": 106, "End": 107, "ArrowDown": 108,
+        "PageDown": 109, "Insert": 110, "Delete": 111, "Pause": 119,
+        "MetaLeft": 125, "MetaRight": 126, "ContextMenu": 127,
+    })
+
+    return codes
+
+
+KEY_CODES = _build_key_codes()
 
 
 class Terminated(Exception):
@@ -99,6 +158,12 @@ class State:
         self.terminated = False
         self.exit_code = 0
         self.first_frame_sent = False
+
+        # Điều khiển từ xa (chỉ backend portal)
+        self.control = None            # Portal đang nhận lệnh, None = tắt
+        self.pending_move = None       # vị trí chuột mới nhất chưa áp dụng
+        self.move_lock = threading.Lock()
+        self.frame_size = None         # (rộng, cao) của khung hình thu được
 
 
 STATE = State()
@@ -137,10 +202,17 @@ def install_signal_handlers():
 
 
 def watch_stdin():
-    """Thoát khi Agent đóng stdin (Agent chết)."""
+    """
+    Đọc lệnh điều khiển (mỗi dòng một JSON) từ Agent.
+    Thoát khi Agent đóng stdin (Agent chết).
+    """
     try:
-        while sys.stdin.buffer.read(1024):
-            pass
+        for raw_line in iter(sys.stdin.buffer.readline, b""):
+            line = raw_line.strip()
+
+            if line:
+                handle_command_line(line)
+
     except Exception:
         pass
 
@@ -148,14 +220,103 @@ def watch_stdin():
     request_stop(0)
 
 
+def handle_command_line(line):
+    """Chạy trên luồng đọc stdin: chuyển lệnh sang luồng GLib chính."""
+    if STATE.control is None:
+        return
+
+    try:
+        command = json.loads(line.decode("utf-8"))
+    except Exception:
+        return
+
+    if not isinstance(command, dict):
+        return
+
+    if command.get("event") == "MOUSE_MOVE":
+        # Gộp: chỉ giữ vị trí mới nhất, chỉ đặt một tác vụ khi chưa có
+        try:
+            position = (float(command.get("x", 0)), float(command.get("y", 0)))
+        except (TypeError, ValueError):
+            return
+
+        with STATE.move_lock:
+            already_scheduled = STATE.pending_move is not None
+            STATE.pending_move = position
+
+        if not already_scheduled:
+            GLib.idle_add(apply_pending_move)
+
+        return
+
+    GLib.idle_add(apply_command, command)
+
+
+def apply_pending_move():
+    with STATE.move_lock:
+        position = STATE.pending_move
+        STATE.pending_move = None
+
+    portal = STATE.control
+
+    if position is not None and portal is not None:
+        run_input(portal.pointer_move, position[0], position[1])
+
+    return False
+
+
+def apply_command(command):
+    """Chạy trên luồng GLib chính (D-Bus dùng chung vòng lặp này)."""
+    portal = STATE.control
+
+    if portal is None:
+        return False
+
+    event = command.get("event")
+
+    try:
+        if event in ("MOUSE_DOWN", "MOUSE_UP"):
+            portal.pointer_move(
+                float(command.get("x", 0)), float(command.get("y", 0)))
+
+            portal.pointer_button(
+                int(command.get("button", 0)), event == "MOUSE_DOWN")
+
+        elif event == "MOUSE_WHEEL":
+            portal.pointer_wheel(int(command.get("delta", 0)))
+
+        elif event in ("KEY_DOWN", "KEY_UP"):
+            portal.keyboard_key(
+                str(command.get("code", "")), event == "KEY_DOWN")
+
+        elif event == "RELEASE_ALL":
+            portal.release_all()
+
+    except Exception as error:
+        log("Lỗi thực thi lệnh điều khiển %s: %s" % (event, error))
+
+    return False
+
+
+def run_input(function, *args):
+    try:
+        function(*args)
+    except Exception as error:
+        log("Lỗi điều khiển: %s" % error)
+
+
 # ======================================================================
 # PORTAL (Wayland / PipeWire)
 # ======================================================================
 
 class Portal:
-    """Quản lý phiên ScreenCast của xdg-desktop-portal."""
+    """
+    Quản lý phiên ScreenCast (và RemoteDesktop nếu cần điều khiển)
+    của xdg-desktop-portal.
+    """
 
-    def __init__(self, restore_token_path, approval_timeout):
+    def __init__(self, restore_token_path, approval_timeout,
+                 want_control=False):
         import dbus
         import dbus.mainloop.glib
 
@@ -173,12 +334,54 @@ class Portal:
             portal_object, SCREENCAST_INTERFACE
         )
 
+        # RemoteDesktop: nhận lệnh chuột/bàn phím. None nếu không dùng được
+        self.remote = None
+        self.control_ready = False
+        self.control_note = ""
+
+        if want_control:
+            try:
+                properties = dbus.Interface(
+                    portal_object, "org.freedesktop.DBus.Properties"
+                )
+
+                available = int(properties.Get(
+                    REMOTEDESKTOP_INTERFACE, "AvailableDeviceTypes"
+                ))
+
+                if available & 3:
+                    self.remote = dbus.Interface(
+                        portal_object, REMOTEDESKTOP_INTERFACE
+                    )
+                else:
+                    self.control_note = (
+                        "Portal không có thiết bị chuột/bàn phím để điều khiển."
+                    )
+
+            except Exception as error:
+                self.control_note = (
+                    "Portal không hỗ trợ RemoteDesktop (%s)." % error
+                )
+
         self.sender = self.bus.get_unique_name()[1:].replace(".", "_")
         self.counter = 0
         self.session_handle = None
         self.pipewire_fd = None
-        self.restore_token_path = restore_token_path
+        self.base_token_path = restore_token_path
+
+        # Quyền RemoteDesktop dùng file token riêng, không lẫn với ScreenCast
+        self.restore_token_path = (
+            restore_token_path + ".remote"
+            if (want_control and restore_token_path)
+            else restore_token_path
+        )
+
         self.approval_timeout = approval_timeout
+
+        self.node_id = None
+        self.stream_size = None
+        self.pressed_keys = set()
+        self.pressed_buttons = set()
 
     def _next_token(self, prefix):
         self.counter += 1
@@ -314,6 +517,33 @@ class Portal:
 
     def open_stream(self):
         """
+        Mở luồng màn hình. Nếu cần điều khiển và Portal hỗ trợ thì dùng
+        phiên RemoteDesktop (gồm cả ScreenCast); ngược lại chỉ ScreenCast.
+
+        Trả về (pipewire_fd, node_id).
+        """
+        if self.remote is not None:
+            try:
+                return self._open_remote_desktop()
+
+            except self.dbus.DBusException as error:
+                # Portal không có / không dùng được RemoteDesktop:
+                # quay về chỉ chia sẻ màn hình
+                log("RemoteDesktop không dùng được: %s" % error)
+
+                self.control_note = (
+                    "Portal không hỗ trợ RemoteDesktop (%s)." % error
+                )
+
+                self.remote = None
+                self.restore_token_path = self.base_token_path
+
+                self.close()
+
+        return self._open_screencast_only()
+
+    def _open_screencast_only(self):
+        """
         Thực hiện CreateSession -> SelectSources -> Start -> OpenPipeWireRemote.
 
         Trả về (pipewire_fd, node_id).
@@ -412,8 +642,256 @@ class Portal:
 
         return self.pipewire_fd, node_id
 
+    def _open_remote_desktop(self):
+        """
+        RemoteDesktop.CreateSession -> SelectDevices -> ScreenCast.SelectSources
+        -> RemoteDesktop.Start -> ScreenCast.OpenPipeWireRemote.
+
+        Một phiên duy nhất vừa cho hình ảnh vừa cho phép điều khiển.
+        Trả về (pipewire_fd, node_id).
+        """
+        dbus = self.dbus
+
+        emit(
+            "STATUS",
+            state="WAITING_APPROVAL",
+            message=(
+                "Đang yêu cầu Portal khởi tạo phiên chia sẻ màn hình "
+                "và điều khiển từ xa..."
+            ),
+        )
+
+        create_options = dbus.Dictionary(
+            {
+                "handle_token": dbus.String(self._next_token("create")),
+                "session_handle_token": dbus.String(
+                    self._next_token("session")
+                ),
+            },
+            signature="sv",
+        )
+
+        create_results = self._call_request(
+            self.remote.CreateSession, (), create_options, 30
+        )
+
+        self.session_handle = str(create_results["session_handle"])
+
+        session = dbus.ObjectPath(self.session_handle)
+
+        # 1. Chọn thiết bị: 1 = bàn phím, 2 = con trỏ
+        device_values = {
+            "handle_token": dbus.String(self._next_token("devices")),
+            "types": dbus.UInt32(3),
+            "persist_mode": dbus.UInt32(2),
+        }
+
+        saved_token = self._load_restore_token()
+
+        if saved_token:
+            device_values["restore_token"] = dbus.String(saved_token)
+
+        self._call_request(
+            self.remote.SelectDevices,
+            (session,),
+            dbus.Dictionary(device_values, signature="sv"),
+            30,
+        )
+
+        # 2. Chọn nguồn hình ảnh (cùng phiên)
+        source_values = {
+            "handle_token": dbus.String(self._next_token("select")),
+            "types": dbus.UInt32(1),
+            "multiple": dbus.Boolean(False),
+            "cursor_mode": dbus.UInt32(2),
+        }
+
+        self._call_request(
+            self.screencast.SelectSources,
+            (session,),
+            dbus.Dictionary(source_values, signature="sv"),
+            30,
+        )
+
+        # 3. Start: người dùng ở máy Client xác nhận
+        emit(
+            "STATUS",
+            state="WAITING_APPROVAL",
+            message=(
+                "Đang chờ người dùng ở máy Client xác nhận chia sẻ màn hình "
+                "và cho phép điều khiển từ xa..."
+            ),
+        )
+
+        start_options = dbus.Dictionary(
+            {"handle_token": dbus.String(self._next_token("start"))},
+            signature="sv",
+        )
+
+        start_results = self._call_request(
+            self.remote.Start,
+            (session, dbus.String("")),
+            start_options,
+            self.approval_timeout,
+        )
+
+        streams = start_results.get("streams", [])
+
+        if not streams:
+            raise RuntimeError("Portal không trả về luồng PipeWire nào.")
+
+        self.node_id = int(streams[0][0])
+
+        try:
+            size = streams[0][1].get("size")
+
+            if size is not None:
+                self.stream_size = (int(size[0]), int(size[1]))
+        except Exception:
+            self.stream_size = None
+
+        devices = int(start_results.get("devices", 0))
+
+        self.control_ready = (devices & 3) == 3
+
+        if not self.control_ready:
+            self.control_note = (
+                "Người dùng ở máy Client không cho phép điều khiển chuột "
+                "và bàn phím."
+            )
+
+        new_token = start_results.get("restore_token")
+
+        if new_token:
+            self._save_restore_token(str(new_token))
+
+        # 4. OpenPipeWireRemote (thuộc ScreenCast, dùng chung session)
+        remote_fd = self.screencast.OpenPipeWireRemote(
+            session,
+            dbus.Dictionary({}, signature="sv"),
+        )
+
+        self.pipewire_fd = (
+            remote_fd.take() if hasattr(remote_fd, "take") else int(remote_fd)
+        )
+
+        log(
+            "PipeWire node: %d, kích thước: %s, điều khiển: %s"
+            % (self.node_id, self.stream_size, self.control_ready)
+        )
+
+        return self.pipewire_fd, self.node_id
+
+    # ------------------------------------------------------------------
+    # Gửi sự kiện chuột / bàn phím (chạy trên luồng GLib chính)
+    # ------------------------------------------------------------------
+
+    def _notify(self, method_name, *args):
+        method = getattr(self.remote, method_name)
+
+        method(
+            self.dbus.ObjectPath(self.session_handle),
+            self.dbus.Dictionary({}, signature="sv"),
+            *args
+        )
+
+    def pointer_move(self, nx, ny):
+        """Di chuột tới toạ độ chuẩn hoá 0..1 so với khung hình."""
+        size = self.stream_size or STATE.frame_size
+
+        if not size or size[0] < 1 or size[1] < 1:
+            return
+
+        x = min(max(nx, 0.0), 1.0) * (size[0] - 1)
+        y = min(max(ny, 0.0), 1.0) * (size[1] - 1)
+
+        self._notify(
+            "NotifyPointerMotionAbsolute",
+            self.dbus.UInt32(self.node_id),
+            self.dbus.Double(x),
+            self.dbus.Double(y),
+        )
+
+    def pointer_button(self, button, pressed):
+        code = BUTTON_CODES.get(button)
+
+        if code is None:
+            return
+
+        self._notify(
+            "NotifyPointerButton",
+            self.dbus.Int32(code),
+            self.dbus.UInt32(1 if pressed else 0),
+        )
+
+        if pressed:
+            self.pressed_buttons.add(code)
+        else:
+            self.pressed_buttons.discard(code)
+
+    def pointer_wheel(self, steps):
+        steps = max(-20, min(20, steps))
+
+        if steps == 0:
+            return
+
+        # axis 0 = cuộn dọc; số dương = cuộn xuống
+        self._notify(
+            "NotifyPointerAxisDiscrete",
+            self.dbus.UInt32(0),
+            self.dbus.Int32(steps),
+        )
+
+    def keyboard_key(self, code, pressed):
+        keycode = KEY_CODES.get(code)
+
+        if keycode is None:
+            return
+
+        self._notify(
+            "NotifyKeyboardKeycode",
+            self.dbus.Int32(keycode),
+            self.dbus.UInt32(1 if pressed else 0),
+        )
+
+        if pressed:
+            self.pressed_keys.add(keycode)
+        else:
+            self.pressed_keys.discard(keycode)
+
+    def release_all(self):
+        """Nhả mọi phím / nút chuột đang giữ (tránh kẹt phím)."""
+        if self.remote is None or not self.session_handle:
+            return
+
+        for keycode in list(self.pressed_keys):
+            try:
+                self._notify(
+                    "NotifyKeyboardKeycode",
+                    self.dbus.Int32(keycode),
+                    self.dbus.UInt32(0),
+                )
+            except Exception:
+                pass
+
+        self.pressed_keys.clear()
+
+        for code in list(self.pressed_buttons):
+            try:
+                self._notify(
+                    "NotifyPointerButton",
+                    self.dbus.Int32(code),
+                    self.dbus.UInt32(0),
+                )
+            except Exception:
+                pass
+
+        self.pressed_buttons.clear()
+
     def close(self):
         """Đóng phiên Portal (tắt biểu tượng đang chia sẻ màn hình)."""
+        self.release_all()
+
         if self.session_handle:
             try:
                 session_object = self.bus.get_object(
@@ -559,6 +1037,17 @@ def run_pipeline(source, args):
             app_src.set_property("caps", caps)
             current_caps[0] = caps_text
 
+            # Nhớ kích thước khung hình (dự phòng khi Portal không báo size)
+            try:
+                structure = caps.get_structure(0)
+                ok_w, width = structure.get_int("width")
+                ok_h, height = structure.get_int("height")
+
+                if ok_w and ok_h:
+                    STATE.frame_size = (width, height)
+            except Exception:
+                pass
+
         result = app_src.emit("push-buffer", sample.get_buffer())
 
         if result != Gst.FlowReturn.OK:
@@ -687,8 +1176,37 @@ def parse_args():
     parser.add_argument("--quality", type=int, default=60)
     parser.add_argument("--restore-token-file", default="")
     parser.add_argument("--approval-timeout", type=int, default=120)
+    parser.add_argument("--remote-control", action="store_true",
+                        help="nhận lệnh chuột/bàn phím qua stdin (portal)")
 
     return parser.parse_args()
+
+
+def report_control_state(portal, args):
+    """Báo cho Agent (rồi tới trình xem) có điều khiển từ xa được hay không."""
+    if not args.remote_control:
+        emit(
+            "STATUS",
+            state="CONTROL_UNSUPPORTED",
+            message="Điều khiển từ xa đã bị tắt trên máy Client.",
+        )
+        return
+
+    if portal.control_ready:
+        STATE.control = portal
+
+        emit(
+            "STATUS",
+            state="CONTROL_READY",
+            message="Có thể điều khiển chuột và bàn phím.",
+        )
+        return
+
+    emit(
+        "STATUS",
+        state="CONTROL_UNSUPPORTED",
+        message=portal.control_note or "Không điều khiển được máy Client.",
+    )
 
 
 def main():
@@ -715,7 +1233,9 @@ def main():
         if backend == "portal":
             try:
                 portal = Portal(
-                    args.restore_token_file, args.approval_timeout
+                    args.restore_token_file,
+                    args.approval_timeout,
+                    args.remote_control,
                 )
             except Exception as error:
                 fail(
@@ -727,10 +1247,17 @@ def main():
 
             fd, node_id = portal.open_stream()
 
+            report_control_state(portal, args)
+
             source = 'pipewiresrc fd=%d path="%d"' % (fd, node_id)
 
         elif backend == "x11":
-            source = "ximagesrc use-damage=false show-pointer=true"
+            # Giới hạn framerate ngay tại nguồn, nếu không ximagesrc
+            # chụp liên tục và ngốn CPU dù phía sau đã bỏ bớt khung hình
+            source = (
+                "ximagesrc use-damage=false show-pointer=true "
+                "! video/x-raw,framerate=%d/1" % args.fps
+            )
 
         else:
             source = (

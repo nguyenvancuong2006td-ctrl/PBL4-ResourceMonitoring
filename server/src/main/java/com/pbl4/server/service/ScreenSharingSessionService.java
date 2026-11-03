@@ -1,5 +1,7 @@
 package com.pbl4.server.service;
 
+import com.pbl4.server.dto.response.PageResponse;
+import com.pbl4.server.dto.response.ScreenSharingHistoryResponse;
 import com.pbl4.server.dto.response.ScreenSharingSessionResponse;
 import com.pbl4.server.enums.AgentStatus;
 import com.pbl4.server.enums.CommandType;
@@ -14,6 +16,7 @@ import com.pbl4.server.repository.ClientAgentRepository;
 import com.pbl4.server.repository.ClientRepository;
 import com.pbl4.server.repository.ScreenSharingSessionRepository;
 
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,6 +32,19 @@ public class ScreenSharingSessionService {
     private final ClientRepository clientRepository;
     private final ClientAgentRepository clientAgentRepository;
     private final RemoteCommandService remoteCommandService;
+
+    // Phiên REQUESTED/STARTING quá thời gian này mà Agent chưa lên ACTIVE
+    // thì coi là thất bại.
+    private static final long START_TIMEOUT_SECONDS = 90;
+
+    // Phiên STOPPING quá thời gian này mà Agent chưa xác nhận dừng
+    // thì coi là đã kết thúc.
+    private static final long STOP_TIMEOUT_SECONDS = 30;
+
+    // Phiên ACTIVE chỉ bị kết thúc khi Agent không ONLINE VÀ lần Heartbeat
+    // cuối cách đây quá thời gian này. Dài hơn ngưỡng OFFLINE (15 giây) để
+    // Agent chỉ trễ Heartbeat chốc lát không làm mất phiên đang phát hình.
+    private static final long AGENT_OFFLINE_TIMEOUT_SECONDS = 60;
 
     private static final List<ScreenSharingStatus> ACTIVE_STATUSES =
             List.of(
@@ -268,6 +284,103 @@ public class ScreenSharingSessionService {
     }
 
     /**
+     * Đưa các phiên bị kẹt về ENDED/FAILED.
+     *
+     * Được gọi định kỳ bởi ScreenSharingSessionScheduler.
+     */
+    @Transactional
+    public void expireStaleSessions() {
+
+        LocalDateTime now = LocalDateTime.now();
+
+        for (ScreenSharingSession s
+                : sessionRepository.findByStatusIn(ACTIVE_STATUSES)) {
+
+            ScreenSharingStatus st = s.getStatus();
+            String reason = null;
+            ScreenSharingStatus next = ScreenSharingStatus.ENDED;
+
+            if ((st == ScreenSharingStatus.REQUESTED
+                    || st == ScreenSharingStatus.STARTING)
+                    && s.getRequestedAt() != null
+                    && s.getRequestedAt().isBefore(
+                            now.minusSeconds(START_TIMEOUT_SECONDS))) {
+
+                // Agent không nhận lệnh hoặc không kết nối được
+                reason = "START_TIMEOUT";
+                next = ScreenSharingStatus.FAILED;
+
+            } else if (st == ScreenSharingStatus.STOPPING
+                    && s.getUpdatedAt() != null
+                    && s.getUpdatedAt().isBefore(
+                            now.minusSeconds(STOP_TIMEOUT_SECONDS))) {
+
+                // Agent không xác nhận dừng (thường do đã offline)
+                reason = "STOP_TIMEOUT";
+
+            } else if (st == ScreenSharingStatus.ACTIVE
+                    && isAgentLost(s.getAgent(), now)) {
+
+                reason = "AGENT_OFFLINE";
+            }
+
+            if (reason != null) {
+                s.setStatus(next);
+                s.setEndedAt(now);
+                s.setEndReason(reason);
+                sessionRepository.save(s);
+            }
+        }
+    }
+
+    /**
+     * Agent coi là đã mất khi không ONLINE và Heartbeat cuối cùng đã quá
+     * AGENT_OFFLINE_TIMEOUT_SECONDS (hoặc chưa từng có Heartbeat).
+     */
+    private boolean isAgentLost(ClientAgent agent, LocalDateTime now) {
+
+        if (agent == null) {
+            return true;
+        }
+
+        if (agent.getStatus() == AgentStatus.ONLINE) {
+            return false;
+        }
+
+        LocalDateTime lastHeartbeat = agent.getLastHeartbeatAt();
+
+        return lastHeartbeat == null
+                || lastHeartbeat.isBefore(
+                        now.minusSeconds(AGENT_OFFLINE_TIMEOUT_SECONDS));
+    }
+
+    /**
+     * Server tự yêu cầu dừng phiên (khi không còn Viewer nào).
+     */
+    @Transactional
+    public void stopSessionBySystem(String sessionCode) {
+
+        ScreenSharingSession s =
+                sessionRepository.findBySessionCode(sessionCode).orElse(null);
+
+        if (s == null
+                || !ACTIVE_STATUSES.contains(s.getStatus())
+                || s.getStatus() == ScreenSharingStatus.STOPPING) {
+            return;
+        }
+
+        remoteCommandService.createCommand(
+                s.getAccount().getAccountId(),
+                s.getClient().getClientId(),
+                CommandType.STOP_SCREEN_SHARING,
+                createSessionParameters(sessionCode)
+        );
+
+        s.setStatus(ScreenSharingStatus.STOPPING);
+        sessionRepository.save(s);
+    }
+
+    /**
      * Lấy phiên chia sẻ hiện tại của Admin.
      */
     @Transactional(readOnly = true)
@@ -285,6 +398,33 @@ public class ScreenSharingSessionService {
                         "Phiên chia sẻ hiện tại."
                 ))
                 .orElse(null);
+    }
+
+    /**
+     * Lịch sử các phiên chia sẻ màn hình (mới nhất trước, có phân trang).
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<ScreenSharingHistoryResponse> getHistory(
+            int page,
+            int size,
+            String clientId,
+            ScreenSharingStatus status) {
+
+        String client = (clientId == null || clientId.isBlank())
+                ? null
+                : clientId.trim();
+
+        Sort sort = Sort.by(Sort.Direction.DESC, "requestedAt")
+                .and(Sort.by(Sort.Direction.DESC, "sessionId"));
+
+        return PageResponse.of(
+                sessionRepository.search(
+                        client,
+                        status,
+                        PageResponse.pageable(page, size, sort)
+                ),
+                ScreenSharingHistoryResponse::from
+        );
     }
 
     /**

@@ -6,6 +6,7 @@ import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -25,7 +26,8 @@ import java.util.function.IntConsumer;
  *              PBL4_EVENT {"type":"STATUS","state":"STREAMING",...}
  *            các dòng khác (cảnh báo của GStreamer...) chỉ được ghi log.
  *
- *   stdin  : Agent không ghi gì. Script tự thoát khi stdin đóng
+ *   stdin  : lệnh điều khiển chuột/bàn phím, mỗi dòng một JSON (xem
+ *            sendCommand). Script tự thoát khi stdin đóng
  *            (Agent bị tắt đột ngột).
  */
 public class ScreenCaptureProcess implements AutoCloseable {
@@ -43,6 +45,9 @@ public class ScreenCaptureProcess implements AutoCloseable {
     private final IntConsumer exitListener;
 
     private final AtomicBoolean stopping = new AtomicBoolean(false);
+
+    // Tuần tự hóa việc ghi vào stdin của script
+    private final Object stdinLock = new Object();
 
     private volatile Process process;
 
@@ -265,6 +270,32 @@ public class ScreenCaptureProcess implements AutoCloseable {
         } catch (InterruptedException e) {
 
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Gửi một lệnh điều khiển (một dòng JSON) cho script qua stdin.
+     * Bỏ qua nếu tiến trình đã dừng.
+     */
+    public void sendCommand(String json) {
+
+        Process current = process;
+
+        if (current == null || stopping.get() || !current.isAlive()) {
+            return;
+        }
+
+        synchronized (stdinLock) {
+
+            try {
+                OutputStream out = current.getOutputStream();
+
+                out.write((json + "\n").getBytes(StandardCharsets.UTF_8));
+                out.flush();
+
+            } catch (IOException e) {
+                // Script đã đóng stdin: bỏ qua, việc dọn dẹp do waitForExit lo
+            }
         }
     }
 

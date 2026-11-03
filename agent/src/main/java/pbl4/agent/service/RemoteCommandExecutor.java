@@ -13,7 +13,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
-public class RemoteCommandExecutor {
+public class RemoteCommandExecutor implements AutoCloseable {
 
     private static final long TERMINATION_TIMEOUT_MS = 3000;
 
@@ -367,5 +367,42 @@ public class RemoteCommandExecutor {
      */
     public ScreenSharingService getScreenSharingService() {
         return screenSharingService;
+    }
+
+    /**
+     * Giải phóng tài nguyên của Executor: dừng phiên chia sẻ màn hình
+     * đang chạy (nếu có) để đóng WebSocket, tiến trình thu màn hình
+     * và bộ điều khiển chuột/bàn phím.
+     *
+     * Được gọi khi Agent bị Server từ chối Credential và phải đăng ký
+     * lại: không thể để phiên cũ chạy tiếp với Credential đã mất hiệu lực.
+     */
+    @Override
+    public void close() {
+
+        try {
+            if (screenSharingService.isSharing()) {
+
+                String sessionCode =
+                        screenSharingService.getCurrentSessionCode();
+
+                if (sessionCode != null && !sessionCode.isBlank()) {
+
+                    screenSharingService.stopSharing(sessionCode);
+                }
+            }
+
+        } catch (Exception e) {
+
+            String message = e.getMessage();
+
+            System.err.println(
+                    "[REMOTE] Không thể dừng chia sẻ màn hình khi đóng "
+                            + "Executor: "
+                            + (message == null || message.isBlank()
+                            ? e.getClass().getSimpleName()
+                            : message)
+            );
+        }
     }
 }
